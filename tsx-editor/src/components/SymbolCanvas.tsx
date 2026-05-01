@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { SymbolDocument, SymbolSelection, SymbolShape, SymbolToolMode } from '../types/symbolDocument'
 
 interface Point {
@@ -45,8 +45,14 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
   onSelectionChange,
   onDocumentChange
 }) => {
+  const WORLD_HALF_EXTENT = 100000
+  const WORLD_EXTENT = WORLD_HALF_EXTENT * 2
   const [draftStart, setDraftStart] = useState<Point | null>(null)
   const [draftEnd, setDraftEnd] = useState<Point | null>(null)
+  const [viewport, setViewport] = useState({ x: 0, y: 0, zoom: 1 })
+  const [isPanning, setIsPanning] = useState(false)
+  const [panStart, setPanStart] = useState<{ clientX: number; clientY: number; viewX: number; viewY: number } | null>(null)
+  const [selectionBox, setSelectionBox] = useState<{ start: Point; end: Point } | null>(null)
 
   const drawingTools: Array<{ mode: SymbolToolMode; label: string }> = [
     { mode: 'select', label: 'select' },
@@ -86,6 +92,33 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
     onSelectionChange(null)
   }
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const isTyping = !!target && (
+        target.tagName === 'INPUT'
+        || target.tagName === 'TEXTAREA'
+        || target.isContentEditable
+      )
+
+      if (isTyping) return
+
+      if ((event.key === 'Delete' || event.key === 'Backspace') && selected) {
+        event.preventDefault()
+        deleteSelected()
+        return
+      }
+
+      if (event.key === 'o' || event.key === 'O') {
+        event.preventDefault()
+        setViewport({ x: 0, y: 0, zoom: 1 })
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selected])
+
   const resetDraft = () => {
     setDraftStart(null)
     setDraftEnd(null)
@@ -95,7 +128,18 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
     const point = pointerToCanvasPoint(event)
 
     if (toolMode === 'select') {
-      onSelectionChange(null)
+      if (event.ctrlKey || event.metaKey) {
+        setSelectionBox({ start: point, end: point })
+        return
+      }
+
+      setIsPanning(true)
+      setPanStart({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        viewX: viewport.x,
+        viewY: viewport.y
+      })
       return
     }
 
@@ -142,11 +186,106 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
   }
 
   const handleCanvasMouseMove = (event: React.MouseEvent<SVGSVGElement>) => {
+    if (selectionBox) {
+      setSelectionBox({ ...selectionBox, end: pointerToCanvasPoint(event) })
+      return
+    }
+
+    if (isPanning && panStart) {
+      const dx = (event.clientX - panStart.clientX) / viewport.zoom
+      const dy = (event.clientY - panStart.clientY) / viewport.zoom
+      setViewport(prev => ({
+        ...prev,
+        x: panStart.viewX - dx,
+        y: panStart.viewY - dy
+      }))
+      return
+    }
+
     if (!draftStart) return
     setDraftEnd(pointerToCanvasPoint(event))
   }
 
   const handleCanvasMouseUp = () => {
+    if (selectionBox) {
+      const minX = Math.min(selectionBox.start.x, selectionBox.end.x)
+      const maxX = Math.max(selectionBox.start.x, selectionBox.end.x)
+      const minY = Math.min(selectionBox.start.y, selectionBox.end.y)
+      const maxY = Math.max(selectionBox.start.y, selectionBox.end.y)
+
+      const intersects = (bounds: { minX: number; maxX: number; minY: number; maxY: number }): boolean => {
+        return !(bounds.maxX < minX || bounds.minX > maxX || bounds.maxY < minY || bounds.minY > maxY)
+      }
+
+      const shapeBounds = (shape: SymbolShape): { minX: number; maxX: number; minY: number; maxY: number } => {
+        if (shape.kind === 'schematicline') {
+          return {
+            minX: Math.min(shape.x1, shape.x2),
+            maxX: Math.max(shape.x1, shape.x2),
+            minY: Math.min(shape.y1, shape.y2),
+            maxY: Math.max(shape.y1, shape.y2)
+          }
+        }
+
+        if (shape.kind === 'schematicrect') {
+          return {
+            minX: shape.schX,
+            maxX: shape.schX + shape.width,
+            minY: shape.schY,
+            maxY: shape.schY + shape.height
+          }
+        }
+
+        if (shape.kind === 'schematiccircle') {
+          return {
+            minX: shape.center.x - shape.radius,
+            maxX: shape.center.x + shape.radius,
+            minY: shape.center.y - shape.radius,
+            maxY: shape.center.y + shape.radius
+          }
+        }
+
+        if (shape.kind === 'schematicarc') {
+          return {
+            minX: shape.center.x - shape.radius,
+            maxX: shape.center.x + shape.radius,
+            minY: shape.center.y - shape.radius,
+            maxY: shape.center.y + shape.radius
+          }
+        }
+
+        return {
+          minX: shape.schX,
+          maxX: shape.schX + Math.max(6, shape.text.length * 6),
+          minY: shape.schY - 8,
+          maxY: shape.schY + 2
+        }
+      }
+
+      const selectedPort = [...document.ports].reverse().find(port => intersects({
+        minX: port.schX - 4,
+        maxX: port.schX + 4,
+        minY: port.schY - 4,
+        maxY: port.schY + 4
+      }))
+
+      if (selectedPort) {
+        onSelectionChange({ kind: 'port', id: selectedPort.id })
+      } else {
+        const selectedShape = [...document.shapes].reverse().find(shape => intersects(shapeBounds(shape)))
+        onSelectionChange(selectedShape ? { kind: 'shape', id: selectedShape.id } : null)
+      }
+
+      setSelectionBox(null)
+      return
+    }
+
+    if (isPanning) {
+      setIsPanning(false)
+      setPanStart(null)
+      return
+    }
+
     if (!draftStart || !draftEnd) return
 
     let nextShape: SymbolShape | null = null
@@ -197,6 +336,21 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
     }
 
     resetDraft()
+  }
+
+  const handleCanvasWheel = (event: React.WheelEvent<SVGSVGElement>) => {
+    event.preventDefault()
+    const cursor = pointerToCanvasPoint(event)
+    const oldZoom = viewport.zoom
+    const zoomFactor = event.deltaY < 0 ? 1.12 : 1 / 1.12
+    const newZoom = Math.max(0.1, Math.min(12, oldZoom * zoomFactor))
+    const zoomRatio = oldZoom / newZoom
+
+    setViewport(prev => ({
+      x: cursor.x - (cursor.x - prev.x) * zoomRatio,
+      y: cursor.y - (cursor.y - prev.y) * zoomRatio,
+      zoom: newZoom
+    }))
   }
 
   const draftShape = useMemo<SymbolShape | null>(() => {
@@ -310,26 +464,35 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
         >
           Delete
         </button>
+        <button
+          className="btn btn-secondary"
+          onClick={() => setViewport({ x: 0, y: 0, zoom: 1 })}
+          style={{ fontSize: 11, padding: '3px 8px' }}
+          title="Back to origin (shortcut: O)"
+        >
+          Origin
+        </button>
         <span style={{ marginLeft: 'auto', color: '#9a9a9a', fontSize: 12 }}>
-          {document.width} x {document.height}
+          {document.width} x {document.height} | {viewport.zoom.toFixed(2)}x
         </span>
       </div>
 
       <div style={{ flex: 1, padding: 10, minHeight: 0 }}>
         <svg
-          viewBox={`0 0 ${document.width} ${document.height}`}
+          viewBox={`${viewport.x} ${viewport.y} ${document.width / viewport.zoom} ${document.height / viewport.zoom}`}
           preserveAspectRatio="none"
           style={{ width: '100%', height: '100%', background: '#151515', border: '1px solid #2f2f2f' }}
           onMouseDown={handleCanvasMouseDown}
           onMouseMove={handleCanvasMouseMove}
           onMouseUp={handleCanvasMouseUp}
+          onWheel={handleCanvasWheel}
         >
           <defs>
             <pattern id="symbol-grid" width="10" height="10" patternUnits="userSpaceOnUse">
               <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#252525" strokeWidth="0.6" />
             </pattern>
           </defs>
-          <rect x={0} y={0} width={document.width} height={document.height} fill="url(#symbol-grid)" />
+          <rect x={-WORLD_HALF_EXTENT} y={-WORLD_HALF_EXTENT} width={WORLD_EXTENT} height={WORLD_EXTENT} fill="url(#symbol-grid)" />
 
           {document.shapes.map(shape => renderShape(shape))}
           {document.ports.map(port => {
@@ -350,6 +513,19 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
               </g>
             )
           })}
+
+          {selectionBox && (
+            <rect
+              x={Math.min(selectionBox.start.x, selectionBox.end.x)}
+              y={Math.min(selectionBox.start.y, selectionBox.end.y)}
+              width={Math.abs(selectionBox.end.x - selectionBox.start.x)}
+              height={Math.abs(selectionBox.end.y - selectionBox.start.y)}
+              fill="rgba(0, 122, 204, 0.15)"
+              stroke="#2ea8ff"
+              strokeWidth={1.2}
+              strokeDasharray="4 3"
+            />
+          )}
 
           {draftShape && renderShape(draftShape, true)}
         </svg>
