@@ -8,6 +8,8 @@ import { extractAllSubcircuits } from '../utils/projectManager'
 
 export const Canvas: React.FC = () => {
   const SNAP_STEP = 2
+  const CANVAS_HALF_EXTENT = 100000
+  const CANVAS_EXTENT = CANVAS_HALF_EXTENT * 2
   const canvasRef = useRef<HTMLDivElement>(null)
   const [isPanning, setIsPanning] = useState(false)
   const [panStart, setPanStart] = useState({ x: 0, y: 0 })
@@ -254,17 +256,33 @@ export const Canvas: React.FC = () => {
     }
   }
 
+  const getWorldPointFromClient = (clientX: number, clientY: number): { x: number; y: number } | null => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return null
+
+    const zoom = viewport.zoom ?? 1
+    return {
+      x: (clientX - rect.left - viewport.x) / zoom,
+      y: (clientY - rect.top - viewport.y) / zoom
+    }
+  }
+
   // Handle canvas panning
   const handleCanvasMouseDown = (e: React.MouseEvent) => {
-    if (e.target === canvasRef.current || (e.target as HTMLElement).classList.contains('canvas-grid')) {
+    const isBackgroundTarget =
+      e.target === canvasRef.current
+      || (e.target as HTMLElement).classList.contains('canvas-grid')
+      || (e.target as HTMLElement).tagName === 'svg'
+      || (e.target as HTMLElement).tagName === 'path'
+      || (e.target as HTMLElement).tagName === 'rect'
+
+    if (isBackgroundTarget) {
       // Ctrl+drag for selection box
       if (e.ctrlKey || e.metaKey) {
         setIsBoxSelecting(true)
-        const rect = canvasRef.current?.getBoundingClientRect()
-        if (rect) {
-          const startX = e.clientX - rect.left - viewport.x
-          const startY = e.clientY - rect.top - viewport.y
-          setSelectionBox({ start: { x: startX, y: startY }, end: { x: startX, y: startY } })
+        const startPoint = getWorldPointFromClient(e.clientX, e.clientY)
+        if (startPoint) {
+          setSelectionBox({ start: startPoint, end: startPoint })
         }
         return
       }
@@ -279,11 +297,9 @@ export const Canvas: React.FC = () => {
 
   const handleCanvasMouseMove = (e: React.MouseEvent) => {
     if (isBoxSelecting && selectionBox) {
-      const rect = canvasRef.current?.getBoundingClientRect()
-      if (rect) {
-        const endX = e.clientX - rect.left - viewport.x
-        const endY = e.clientY - rect.top - viewport.y
-        setSelectionBox({ ...selectionBox, end: { x: endX, y: endY } })
+      const endPoint = getWorldPointFromClient(e.clientX, e.clientY)
+      if (endPoint) {
+        setSelectionBox({ ...selectionBox, end: endPoint })
       }
       return
     }
@@ -307,9 +323,7 @@ export const Canvas: React.FC = () => {
       const selectedIds = placedComponents.filter(comp => {
         const compX = comp.props.schX || 0
         const compY = comp.props.schY || 0
-        const schematic = getPinConfig(comp.catalogId)
-        const width = schematic?.width || 60
-        const height = schematic?.height || 40
+        const { width, height } = getComponentSize(comp)
         
         return compX >= minX && compX + width <= maxX && compY >= minY && compY + height <= maxY
       }).map(comp => comp.id)
@@ -339,8 +353,9 @@ export const Canvas: React.FC = () => {
 
     // Calculate drop position relative to canvas
     const rect = canvasRef.current.getBoundingClientRect()
-    const x = Math.round((e.clientX - rect.left - viewport.x) / SNAP_STEP) * SNAP_STEP
-    const y = Math.round((e.clientY - rect.top - viewport.y) / SNAP_STEP) * SNAP_STEP
+    const zoom = viewport.zoom ?? 1
+    const x = Math.round(((e.clientX - rect.left - viewport.x) / zoom) / SNAP_STEP) * SNAP_STEP
+    const y = Math.round(((e.clientY - rect.top - viewport.y) / zoom) / SNAP_STEP) * SNAP_STEP
 
     if (subcircuitName) {
       insertSubcircuitInstance(subcircuitName, {
@@ -521,8 +536,9 @@ export const Canvas: React.FC = () => {
       }))
 
     const handleMouseMove = (e: MouseEvent) => {
-      const dx = e.clientX - startX
-      const dy = e.clientY - startY
+      const zoom = viewport.zoom ?? 1
+      const dx = (e.clientX - startX) / zoom
+      const dy = (e.clientY - startY) / zoom
       
       // Move all selected components
       initialPositions.forEach(({ id, schX, schY }) => {
@@ -598,11 +614,8 @@ export const Canvas: React.FC = () => {
 
   // Check if cursor is near any pin
   const checkCursorNearPin = (e: React.MouseEvent) => {
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect) return
-
-    const mouseX = e.clientX - rect.left - viewport.x
-    const mouseY = e.clientY - rect.top - viewport.y
+    const mousePoint = getWorldPointFromClient(e.clientX, e.clientY)
+    if (!mousePoint) return
 
     let nearPin: { componentId: string; pinName: string } | null = null
 
@@ -615,7 +628,7 @@ export const Canvas: React.FC = () => {
         if (!pinPos) continue
 
         const distance = Math.sqrt(
-          Math.pow(mouseX - pinPos.x, 2) + Math.pow(mouseY - pinPos.y, 2)
+          Math.pow(mousePoint.x - pinPos.x, 2) + Math.pow(mousePoint.y - pinPos.y, 2)
         )
 
         if (distance < 15) { // 15px threshold
@@ -896,15 +909,15 @@ export const Canvas: React.FC = () => {
           <svg 
             style={{
               position: 'absolute', 
-              top: 0, 
-              left: 0, 
-              width: '4000px', 
-              height: '4000px',
+              top: -CANVAS_HALF_EXTENT, 
+              left: -CANVAS_HALF_EXTENT, 
+              width: `${CANVAS_EXTENT}px`, 
+              height: `${CANVAS_EXTENT}px`,
               pointerEvents: 'none',
               overflow: 'visible',
               zIndex: 5
             }}
-            viewBox="0 0 4000 4000"
+            viewBox={`${-CANVAS_HALF_EXTENT} ${-CANVAS_HALF_EXTENT} ${CANVAS_EXTENT} ${CANVAS_EXTENT}`}
           >
             {wires.map((wire) => renderWire(wire))}
             {renderTempWire()}

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { CatalogPanel } from './components/CatalogPanel'
 import { Canvas } from './components/Canvas'
 import { Header } from './components/Header'
@@ -6,8 +6,19 @@ import { StatusBar } from './components/StatusBar'
 import { FileTree } from './components/FileTree'
 import { EditorTabs } from './components/EditorTabs'
 import { EnhancedPropertiesPanel } from './components/EnhancedPropertiesPanel'
+import { SymbolCanvas } from './components/SymbolCanvas'
+import { SymbolPropertiesPanel } from './components/SymbolPropertiesPanel'
 import { CodeView } from './components/CodeView'
 import { useEditorStore } from './store/editorStore'
+import {
+  createSymbolDocument,
+  generateSymbolTsx,
+  getGeneratedSymbolTsxPath,
+  getSymbolEditorPathFromName,
+  importSymbolTsxToDocument,
+  isSymbolEditorPath,
+  parseSymbolDocument
+} from './utils/symbolDocument'
 import {
   buildComponentUsage,
   buildImportedProjectState,
@@ -17,6 +28,7 @@ import {
 } from './utils/projectManager'
 import { classifyFilePath, isCanvasEditableFileType } from './utils/fileClassification'
 import { CatalogItem } from './types/catalog'
+import { SymbolDocument, SymbolSelection, SymbolToolMode } from './types/symbolDocument'
 import { getApplicablePatches } from './lib/patches'
 import './App.css'
 
@@ -39,6 +51,8 @@ function App() {
   const [leftPanelTab, setLeftPanelTab] = useState<LeftTab>('files')
   const [editingWsId, setEditingWsId] = useState<string | null>(null)
   const [editingWsName, setEditingWsName] = useState('')
+  const [symbolToolMode, setSymbolToolMode] = useState<SymbolToolMode>('select')
+  const [symbolSelection, setSymbolSelection] = useState<SymbolSelection>(null)
 
   const regenerateTSX        = useEditorStore(s => s.regenerateTSX)
   const fsMap                = useEditorStore(s => s.fsMap)
@@ -73,6 +87,19 @@ function App() {
   const activeFileContent = fsMap[activeFilePath || MAIN_SCHEMATIC_PATH] || ''
   const activeFileType = classifyFilePath(activeFilePath || MAIN_SCHEMATIC_PATH)
   const canRenderCanvas = isCanvasEditableFileType(activeFileType)
+  const isSymbolEditorFile = isSymbolEditorPath(activeFilePath)
+  const symbolDocument = useMemo<SymbolDocument | null>(() => {
+    if (!isSymbolEditorFile) return null
+    return parseSymbolDocument(activeFileContent, activeFilePath.split('/').pop()?.replace('.symbol.json', '') || 'MySymbol')
+  }, [activeFileContent, activeFilePath, isSymbolEditorFile])
+  const canRenderSymbolEditor = isSymbolEditorFile && !!symbolDocument
+
+  const symbolEditorDocuments = useMemo(
+    () => Object.keys(fsMap)
+      .filter(path => /^symbols\/\.editor\/.+\.symbol\.json$/.test(path))
+      .sort((a, b) => a.localeCompare(b)),
+    [fsMap]
+  )
 
   const importedProject = buildImportedProjectState(fsMap)
   const symbolRegistry = extractAllSymbols(fsMap)
@@ -102,6 +129,11 @@ function App() {
     .filter(saved => !subcircuitRegistry.some(local => local.name === saved.name))
 
   useEffect(() => { regenerateTSX() }, [regenerateTSX])
+
+  useEffect(() => {
+    setSymbolSelection(null)
+    setSymbolToolMode('select')
+  }, [activeFilePath])
 
   const startRenameWorkspace = (id: string, name: string) => {
     setEditingWsId(id)
@@ -238,6 +270,67 @@ function App() {
     setActiveFilePath(filePath)
   }
 
+  const createNewSymbolEditorFile = () => {
+    const baseName = prompt('New symbol maker document name:', 'MySymbol')?.trim()
+    if (!baseName) return
+
+    const doc = createSymbolDocument(baseName)
+    const editorPath = getSymbolEditorPathFromName(doc.name)
+
+    if (fsMap[editorPath]) {
+      setActiveFilePath(editorPath)
+      return
+    }
+
+    setFSMap({
+      ...fsMap,
+      [editorPath]: JSON.stringify(doc, null, 2)
+    })
+    setActiveFilePath(editorPath)
+  }
+
+  const saveSymbolDocument = (nextDocument: SymbolDocument) => {
+    if (!isSymbolEditorFile) return
+    setFSMap({
+      ...fsMap,
+      [activeFilePath]: JSON.stringify(nextDocument, null, 2)
+    })
+  }
+
+  const exportActiveSymbolDocument = () => {
+    if (!symbolDocument) return
+    const tsxPath = getGeneratedSymbolTsxPath(symbolDocument.name)
+    const nextMap = {
+      ...fsMap,
+      [tsxPath]: generateSymbolTsx(symbolDocument)
+    }
+    setFSMap(nextMap)
+    setActiveFilePath(tsxPath)
+    alert(`Exported symbol TSX: ${tsxPath}`)
+  }
+
+  const importSymbolComponentToEditor = (symbolPath: string) => {
+    const symbolContent = fsMap[symbolPath]
+    if (!symbolContent) return
+    const symbolName = symbolPath.split('/').pop()?.replace('.tsx', '') || 'ImportedSymbol'
+    const editorPath = getSymbolEditorPathFromName(symbolName)
+
+    if (fsMap[editorPath] && !window.confirm(`Overwrite existing symbol document at ${editorPath}?`)) {
+      return
+    }
+
+    const doc = importSymbolTsxToDocument(symbolContent, symbolName)
+    setFSMap({
+      ...fsMap,
+      [editorPath]: JSON.stringify(doc, null, 2)
+    })
+    setActiveFilePath(editorPath)
+
+    if (doc.needsManualReview) {
+      alert('Imported with best-effort parsing. Some dynamic TSX could not be represented exactly and needs manual review.')
+    }
+  }
+
   return (
     <div className="editor-container">
       <Header />
@@ -368,10 +461,45 @@ function App() {
               <div style={{ padding: 8 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <div style={{ color: '#ccc', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1 }}>Symbol Files</div>
-                  <button
-                    style={{ background: '#007acc', border: 'none', color: '#fff', borderRadius: 3, padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}
-                    onClick={createNewSymbolFile}
-                  >+ New</button>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button
+                      style={{ background: '#007acc', border: 'none', color: '#fff', borderRadius: 3, padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}
+                      onClick={createNewSymbolEditorFile}
+                    >+ Maker</button>
+                    <button
+                      style={{ background: '#3f3f46', border: 'none', color: '#fff', borderRadius: 3, padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}
+                      onClick={createNewSymbolFile}
+                    >+ TSX</button>
+                  </div>
+                </div>
+
+                <div style={{ color: '#888', fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>
+                  Symbol Maker Documents
+                </div>
+                {symbolEditorDocuments.length === 0 && (
+                  <div style={{ color: '#666', fontSize: 12, marginBottom: 10 }}>No symbol JSON documents yet.</div>
+                )}
+                {symbolEditorDocuments.map(path => {
+                  const name = path.split('/').pop()?.replace('.symbol.json', '') || path
+                  return (
+                    <div
+                      key={path}
+                      style={{
+                        padding: '5px 8px', marginBottom: 2, borderRadius: 4, cursor: 'pointer',
+                        background: path === activeFilePath ? '#094771' : '#2a2a2a',
+                        color: path === activeFilePath ? '#fff' : '#ccc',
+                        fontSize: 12
+                      }}
+                      onClick={() => setActiveFilePath(path)}
+                      title="Editable SymbolDocument JSON source"
+                    >
+                      ✍ {name}.symbol.json
+                    </div>
+                  )
+                })}
+
+                <div style={{ color: '#888', fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, marginTop: 10, marginBottom: 6 }}>
+                  Generated Symbol Components
                 </div>
                 {symbolRegistry.length === 0 && (
                   <div style={{ color: '#666', fontSize: 12 }}>No symbol files found.<br />Add .tsx files to the <code>symbols/</code> folder.</div>
@@ -394,7 +522,21 @@ function App() {
                     }}
                     title="Drag onto canvas to place custom chip instance"
                   >
-                    🧩 {symbol.name}{symbol.ports.length > 0 ? ` (${symbol.ports.map(port => port.name).join(', ')})` : ''}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        🧩 {symbol.name}{symbol.ports.length > 0 ? ` (${symbol.ports.map(port => port.name).join(', ')})` : ''}
+                      </span>
+                      <button
+                        style={{ background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 11 }}
+                        title="Import TSX into symbol maker JSON"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          importSymbolComponentToEditor(symbol.filePath)
+                        }}
+                      >
+                        ⇢ Maker
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -532,7 +674,16 @@ function App() {
         {/* ── Center: editor tabs + canvas ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <EditorTabs />
-          {canRenderCanvas ? (
+          {canRenderSymbolEditor && symbolDocument ? (
+            <SymbolCanvas
+              document={symbolDocument}
+              toolMode={symbolToolMode}
+              selected={symbolSelection}
+              onToolModeChange={setSymbolToolMode}
+              onSelectionChange={setSymbolSelection}
+              onDocumentChange={saveSymbolDocument}
+            />
+          ) : canRenderCanvas ? (
             <Canvas />
           ) : (
             <CodeView />
@@ -541,41 +692,51 @@ function App() {
 
         {/* ── Right Panel ── */}
         <div style={{ width: 300, background: '#252526', borderLeft: '1px solid #3e3e3e', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-          <EnhancedPropertiesPanel
-            selectedComponent={selectedComponent}
-            connections={relevantConnections}
-            activeFileContent={activeFileContent}
-            activeFilePath={activeFilePath || MAIN_SCHEMATIC_PATH}
-            activeFileType={activeFileType}
-            placedComponents={placedComponents}
-            onPropertyChange={(componentId, propName, value) => {
-              const component = placedComponents.find(c => c.id === componentId)
-              if (component) {
-                if (propName === 'name') {
-                  const nextName = String(value || component.name)
+          {canRenderSymbolEditor && symbolDocument ? (
+            <SymbolPropertiesPanel
+              document={symbolDocument}
+              selected={symbolSelection}
+              onSelectionChange={setSymbolSelection}
+              onDocumentChange={saveSymbolDocument}
+              onExportTsx={exportActiveSymbolDocument}
+            />
+          ) : (
+            <EnhancedPropertiesPanel
+              selectedComponent={selectedComponent}
+              connections={relevantConnections}
+              activeFileContent={activeFileContent}
+              activeFilePath={activeFilePath || MAIN_SCHEMATIC_PATH}
+              activeFileType={activeFileType}
+              placedComponents={placedComponents}
+              onPropertyChange={(componentId, propName, value) => {
+                const component = placedComponents.find(c => c.id === componentId)
+                if (component) {
+                  if (propName === 'name') {
+                    const nextName = String(value || component.name)
 
-                  const netNameProps =
-                    component.catalogId === 'net'
-                      ? { name: nextName, netName: nextName }
-                      : component.catalogId === 'netport'
-                      ? { name: nextName, netName: nextName }
-                      : component.catalogId === 'netlabel'
-                      ? { net: nextName }
-                      : null
+                    const netNameProps =
+                      component.catalogId === 'net'
+                        ? { name: nextName, netName: nextName }
+                        : component.catalogId === 'netport'
+                        ? { name: nextName, netName: nextName }
+                        : component.catalogId === 'netlabel'
+                        ? { net: nextName }
+                        : null
+
+                    updatePlacedComponent(componentId, {
+                      name: nextName,
+                      ...(netNameProps ? { props: netNameProps } : {})
+                    })
+                    return
+                  }
 
                   updatePlacedComponent(componentId, {
-                    name: nextName,
-                    ...(netNameProps ? { props: netNameProps } : {})
+                    props: { [propName]: value }
                   })
-                  return
                 }
-
-                updatePlacedComponent(componentId, {
-                  props: { [propName]: value }
-                })
-              }
-            }}
-          />
+              }}
+            />
+          )}
         </div>
       </div>
 

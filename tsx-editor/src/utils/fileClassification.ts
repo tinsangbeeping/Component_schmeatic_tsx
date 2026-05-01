@@ -2,6 +2,7 @@ export type ActiveFileType =
   | 'board-tsx'
   | 'subcircuit-tsx'
   | 'symbol-component-tsx'
+  | 'symbol-editor-json'
   | 'raw-source'
   | 'source-ts'
   | 'json'
@@ -46,6 +47,8 @@ export const getFolderForDetectedFileKind = (kind: DetectedFileKind): 'schematic
 }
 
 export const classifyFilePath = (filePath: string): ActiveFileType => {
+  if (/^symbols\/\.editor\/.+\.symbol\.json$/.test(filePath)) return 'symbol-editor-json'
+
   if (filePath.endsWith('.json')) return 'json'
 
   if (filePath.endsWith('.tsx')) {

@@ -10,6 +10,8 @@ const MAIN_SCHEMATIC_PATH = 'schematics/main.tsx'
 export const Header: React.FC = () => {
   const {
     fsMap,
+    setFSMap,
+    setActiveFilePath,
     placedComponents,
     applyLayout,
     autoWireCommonNets,
@@ -266,6 +268,31 @@ export const Header: React.FC = () => {
     }
   }
 
+  const handleCreateSchematicPage = () => {
+    const baseName = window.prompt('New schematic page name (.tsx):', 'NewSheet')?.trim()
+    if (!baseName) return
+
+    const safeName = baseName.replace(/[^a-zA-Z0-9_]/g, '_')
+    if (!safeName) {
+      alert('Please enter a valid alphanumeric page name.')
+      return
+    }
+
+    const filePath = `schematics/${safeName}.tsx`
+    if (fsMap[filePath]) {
+      setActiveFilePath(filePath)
+      alert(`Opened existing page: ${filePath}`)
+      return
+    }
+
+    setFSMap({
+      ...fsMap,
+      [filePath]: `export default () => (\n  <board width="50mm" height="50mm">\n    {/* Add components here */}\n  </board>\n)\n`
+    })
+    setActiveFilePath(filePath)
+    alert(`Created schematic page: ${filePath}`)
+  }
+
   const handleExportAsComponent = () => {
     if (!exportName) return
     if (placedComponents.length === 0) { alert('No components to export'); return }
@@ -381,9 +408,13 @@ export const Header: React.FC = () => {
           <button className="btn btn-secondary" onClick={handleAutoWire} disabled={placedComponents.length === 0}>
             Auto Wire
           </button>
+          <button className="btn btn-secondary" onClick={removeSelectedComponents} disabled={selectedComponentIds.length === 0}>
+            Delete Selected
+          </button>
           <button className="btn btn-secondary" onClick={handleExportZip} disabled={isZipExporting || Object.keys(fsMap).length === 0}>
             {isZipExporting ? 'Exporting Zip...' : 'Export Zip'}
           </button>
+          <button className="btn btn-primary" onClick={handleCreateSchematicPage}>New Schematic</button>
           <button className="btn btn-secondary" onClick={() => setShowImportDialog(true)}>Import TSX</button>
           <button className="btn btn-secondary" onClick={() => setShowBatchImportDialog(true)}>Import Batch</button>
           <button className="btn btn-secondary" onClick={() => zipInputRef.current?.click()} disabled={isZipImporting}>

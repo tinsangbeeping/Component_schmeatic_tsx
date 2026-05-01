@@ -67,17 +67,21 @@ export const buildProjectFileTree = (fsMap: FSMap): FileTreeNode => {
   }
 
   // Keep the expected workspace roots visible even when empty.
-  ;['schematics', 'subcircuits', 'symbols', 'raw', 'editor'].forEach(ensureFolderNode)
+  ;['schematics', 'subcircuits', 'symbols', 'symbols/.editor', 'raw', 'editor'].forEach(ensureFolderNode)
 
   Object.entries(fsMap).forEach(([path, content]) => {
     const normalizedPath = path.replace(/^\/+|\/+$/g, '')
     if (!normalizedPath) return
 
+    const isSymbolEditorDocument = /^symbols\/\.editor\/.+\.symbol\.json$/.test(normalizedPath)
     const detectedKind = inferDetectedFileKind(normalizedPath, content)
     const parts = normalizedPath.split('/')
     const fileName = parts[parts.length - 1]
     const actualParentFolderPath = parts.slice(0, -1).join('/')
     const parentFolderPath =
+      isSymbolEditorDocument
+        ? actualParentFolderPath || 'symbols/.editor'
+        :
       detectedKind === 'raw'
         ? actualParentFolderPath || 'raw'
         : getFolderForDetectedFileKind(detectedKind)
