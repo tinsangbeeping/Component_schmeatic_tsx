@@ -145,6 +145,48 @@ export const Canvas: React.FC = () => {
     return map
   }, [fsMap])
 
+  const shiftSymbolShape = (shape: any, dx: number, dy: number): any => {
+    if (!shape || (dx === 0 && dy === 0)) return shape
+
+    if (shape.kind === 'schematicline') {
+      return {
+        ...shape,
+        x1: Number(shape.x1 || 0) + dx,
+        y1: Number(shape.y1 || 0) + dy,
+        x2: Number(shape.x2 || 0) + dx,
+        y2: Number(shape.y2 || 0) + dy
+      }
+    }
+
+    if (shape.kind === 'schematicrect') {
+      return {
+        ...shape,
+        schX: Number(shape.schX || 0) + dx,
+        schY: Number(shape.schY || 0) + dy
+      }
+    }
+
+    if (shape.kind === 'schematiccircle' || shape.kind === 'schematicarc') {
+      return {
+        ...shape,
+        center: {
+          x: Number(shape.center?.x || 0) + dx,
+          y: Number(shape.center?.y || 0) + dy
+        }
+      }
+    }
+
+    if (shape.kind === 'schematictext') {
+      return {
+        ...shape,
+        schX: Number(shape.schX || 0) + dx,
+        schY: Number(shape.schY || 0) + dy
+      }
+    }
+
+    return shape
+  }
+
   const getResolvedSymbolData = (component: PlacedComponent): {
     width: number
     height: number
@@ -182,16 +224,72 @@ export const Canvas: React.FC = () => {
     const localOriginY = Number(component.props.symbolOriginY)
     const resolvedOrigin = resolved?.geometry?.origin
 
-    return {
-      width: Math.max(20, Number(component.props.symbolWidth || resolved?.geometry?.width || 120)),
-      height: Math.max(20, Number(component.props.symbolHeight || resolved?.geometry?.height || 80)),
-      origin: {
-        x: Number.isFinite(localOriginX) ? localOriginX : Number(resolvedOrigin?.x || 0),
-        y: Number.isFinite(localOriginY) ? localOriginY : Number(resolvedOrigin?.y || 0)
-      },
-      ports: normalizedLocalPorts.length > 0 ? normalizedLocalPorts : resolvedPorts,
-      shapes: localShapes.length > 0 ? localShapes : resolvedShapes
+    const width = Math.max(20, Number(component.props.symbolWidth || resolved?.geometry?.width || 120))
+    const height = Math.max(20, Number(component.props.symbolHeight || resolved?.geometry?.height || 80))
+    const origin = {
+      x: Number.isFinite(localOriginX) ? localOriginX : Number(resolvedOrigin?.x || 0),
+      y: Number.isFinite(localOriginY) ? localOriginY : Number(resolvedOrigin?.y || 0)
     }
+    const ports = normalizedLocalPorts.length > 0 ? normalizedLocalPorts : resolvedPorts
+    const shapes = localShapes.length > 0 ? localShapes : resolvedShapes
+
+    const points: Array<{ x: number; y: number }> = []
+    ports.forEach((port) => {
+      points.push({ x: Number(port.schX || 0), y: Number(port.schY || 0) })
+    })
+    shapes.forEach((shape: any) => {
+      if (shape.kind === 'schematicline') {
+        points.push({ x: Number(shape.x1 || 0), y: Number(shape.y1 || 0) })
+        points.push({ x: Number(shape.x2 || 0), y: Number(shape.y2 || 0) })
+      }
+      if (shape.kind === 'schematicrect') {
+        const x = Number(shape.schX || 0)
+        const y = Number(shape.schY || 0)
+        const w = Number(shape.width || 0)
+        const h = Number(shape.height || 0)
+        points.push({ x, y })
+        points.push({ x: x + w, y: y + h })
+      }
+      if (shape.kind === 'schematiccircle' || shape.kind === 'schematicarc') {
+        const cx = Number(shape.center?.x || 0)
+        const cy = Number(shape.center?.y || 0)
+        const r = Math.abs(Number(shape.radius || 0))
+        points.push({ x: cx - r, y: cy - r })
+        points.push({ x: cx + r, y: cy + r })
+      }
+      if (shape.kind === 'schematictext') {
+        points.push({ x: Number(shape.schX || 0), y: Number(shape.schY || 0) })
+      }
+    })
+
+    const minX = points.length > 0 ? Math.min(...points.map(point => point.x)) : 0
+    const minY = points.length > 0 ? Math.min(...points.map(point => point.y)) : 0
+    const maxX = points.length > 0 ? Math.max(...points.map(point => point.x)) : width
+    const maxY = points.length > 0 ? Math.max(...points.map(point => point.y)) : height
+    const outOfBounds = minX < 0 || minY < 0 || maxX > width || maxY > height
+    const shiftX = outOfBounds ? -origin.x : 0
+    const shiftY = outOfBounds ? -origin.y : 0
+
+    return {
+      width,
+      height,
+      origin,
+      ports: ports.map((port) => ({
+        name: String(port.name || ''),
+        schX: Number(port.schX || 0) + shiftX,
+        schY: Number(port.schY || 0) + shiftY
+      })),
+      shapes: shapes.map(shape => shiftSymbolShape(shape, shiftX, shiftY))
+    }
+  }
+
+  const isCustomSymbolComponent = (component: PlacedComponent): boolean => {
+    if (component.catalogId === 'symbol-instance') return true
+    if (Array.isArray(component.props.symbolShapes) || Array.isArray(component.props.symbolPorts)) return true
+    const symbolPath = String(component.props.subcircuitPath || '').trim()
+    if (symbolPath.startsWith('symbols/')) return true
+    const symbolName = String(component.props.symbolName || '').trim()
+    return symbolName.length > 0
   }
 
   const normalizeRotation = (rotation: any): number => {
@@ -218,6 +316,14 @@ export const Canvas: React.FC = () => {
   }
 
   const getBaseComponentSize = (component: PlacedComponent) => {
+    if (isCustomSymbolComponent(component)) {
+      const resolved = getResolvedSymbolData(component)
+      return {
+        width: resolved.width,
+        height: resolved.height
+      }
+    }
+
     if (component.catalogId === 'netport') {
       return { width: 72, height: 22 }
     }
@@ -233,13 +339,6 @@ export const Canvas: React.FC = () => {
       const portCount = ((component.props.ports as string[] | undefined) || []).length
       const rows = Math.max(1, Math.ceil(portCount / 2))
       return { width: 150, height: Math.max(52, 34 + rows * 18) }
-    }
-    if (component.catalogId === 'symbol-instance') {
-      const resolved = getResolvedSymbolData(component)
-      return {
-        width: resolved.width,
-        height: resolved.height
-      }
     }
     if (component.catalogId === 'customchip') {
       const legacyCount = Math.max(2, Number(component.props.pinCount || 8))
@@ -262,32 +361,7 @@ export const Canvas: React.FC = () => {
   }
 
   const getDynamicPins = (component: PlacedComponent) => {
-    if (component.catalogId === 'netport') {
-      return [{ name: 'port', x: 0, y: 11 }]
-    }
-
-    if (component.catalogId === 'public-port') {
-      return [{ name: 'port', x: 9, y: 9 }]
-    }
-
-    if (component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance') {
-      const ports = (component.props.ports as string[] | undefined) || []
-      const width = component.catalogId === 'sheet-instance' ? 150 : 130
-      if (ports.length === 0) {
-        return [{ name: 'IO', x: 0, y: 20 }]
-      }
-      return ports.map((portName, index) => {
-        const row = Math.floor(index / 2)
-        const isLeft = index % 2 === 0
-        return {
-          name: portName,
-          x: isLeft ? 0 : width,
-          y: 18 + row * 18
-        }
-      })
-    }
-
-    if (component.catalogId === 'symbol-instance') {
+    if (isCustomSymbolComponent(component)) {
       const resolved = getResolvedSymbolData(component)
       const symbolPorts = resolved.ports
       if (symbolPorts.length > 0) {
@@ -303,6 +377,31 @@ export const Canvas: React.FC = () => {
       const ports = ((component.props.ports as string[] | undefined) || []).map(String)
       const width = resolved.width
       if (ports.length === 0) return []
+      return ports.map((portName, index) => {
+        const row = Math.floor(index / 2)
+        const isLeft = index % 2 === 0
+        return {
+          name: portName,
+          x: isLeft ? 0 : width,
+          y: 18 + row * 18
+        }
+      })
+    }
+
+    if (component.catalogId === 'netport') {
+      return [{ name: 'port', x: 0, y: 11 }]
+    }
+
+    if (component.catalogId === 'public-port') {
+      return [{ name: 'port', x: 9, y: 9 }]
+    }
+
+    if (component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance') {
+      const ports = (component.props.ports as string[] | undefined) || []
+      const width = component.catalogId === 'sheet-instance' ? 150 : 130
+      if (ports.length === 0) {
+        return [{ name: 'IO', x: 0, y: 20 }]
+      }
       return ports.map((portName, index) => {
         const row = Math.floor(index / 2)
         const isLeft = index % 2 === 0
@@ -1117,7 +1216,7 @@ export const Canvas: React.FC = () => {
             const isSelected = selectedComponentIds.includes(component.id)
             const isSubcircuit = component.catalogId === 'subcircuit-instance'
             const isSheetInstance = component.catalogId === 'sheet-instance'
-            const isSymbolInstance = component.catalogId === 'symbol-instance'
+            const useCustomSymbolRenderer = isCustomSymbolComponent(component)
             const isNetPort = component.catalogId === 'netport'
             const isPublicPort = component.catalogId === 'public-port'
             const isNet = component.catalogId === 'net'
@@ -1134,7 +1233,7 @@ export const Canvas: React.FC = () => {
               return null
             }
 
-            if (!isSubcircuit && !isSheetInstance && !isSymbolInstance && !isNetPort && !isPublicPort && !isNetLabel && !getCatalogItem(component.catalogId)) {
+            if (!isSubcircuit && !isSheetInstance && !useCustomSymbolRenderer && !isNetPort && !isPublicPort && !isNetLabel && !getCatalogItem(component.catalogId)) {
               return null
             }
             
@@ -1157,7 +1256,7 @@ export const Canvas: React.FC = () => {
                     ? 'rgba(76, 175, 80, 0.12)'
                     : isSubcircuit
                     ? 'rgba(255, 152, 0, 0.12)'
-                    : isSymbolInstance
+                    : useCustomSymbolRenderer
                     ? 'transparent'
                     : 'transparent',
                   border: isSelected
@@ -1174,7 +1273,7 @@ export const Canvas: React.FC = () => {
                     ? '2px dashed rgba(76, 175, 80, 0.6)'
                     : isSubcircuit
                     ? '2px dashed rgba(255, 152, 0, 0.55)'
-                    : isSymbolInstance
+                    : useCustomSymbolRenderer
                     ? 'none'
                     : '1px solid #3e3e3e',
                   cursor: cursorNearPin?.componentId === component.id ? 'crosshair' : 'move',
@@ -1194,8 +1293,9 @@ export const Canvas: React.FC = () => {
                   if (isSheetInstance && component.props.sheetPath) {
                     setActiveFilePath(component.props.sheetPath)
                   }
-                  if (isSymbolInstance && component.props.symbolName) {
-                    setActiveFilePath(`symbols/${component.props.symbolName}.tsx`)
+                  if (useCustomSymbolRenderer && component.props.symbolName) {
+                    const symbolPath = String(component.props.subcircuitPath || `symbols/${component.props.symbolName}.tsx`)
+                    setActiveFilePath(symbolPath)
                   }
                 }}
               >
@@ -1215,7 +1315,7 @@ export const Canvas: React.FC = () => {
                     ? '#81c784'
                     : isSubcircuit
                     ? '#ff9800'
-                    : isSymbolInstance
+                    : useCustomSymbolRenderer
                     ? '#26c6da'
                     : '#e0e0e0',
                   fontWeight: 500,
@@ -1313,7 +1413,7 @@ export const Canvas: React.FC = () => {
                   />
                 )}
 
-                {!isSubcircuit && !isSheetInstance && !isSymbolInstance && !isNetPort && !isPublicPort && !isNetLabel && (
+                {!isSubcircuit && !isSheetInstance && !useCustomSymbolRenderer && !isNetPort && !isPublicPort && !isNetLabel && (
                   <div
                     style={{
                       width: baseSize.width,
@@ -1331,7 +1431,7 @@ export const Canvas: React.FC = () => {
                   </div>
                 )}
 
-                {isSymbolInstance && (
+                {useCustomSymbolRenderer && (
                   <div
                     style={{
                       width: baseSize.width,

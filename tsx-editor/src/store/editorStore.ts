@@ -1654,12 +1654,48 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         name: port.name,
         schX: Number(port.x || 0),
         schY: Number(port.y || 0)
-      })) || []
-      props.symbolShapes = resolvedSymbolDefinition?.geometry?.shapes?.map(shape => ({ ...shape })) || []
-      props.symbolWidth = Number(resolvedSymbolDefinition?.geometry?.width || props.symbolWidth || 120)
-      props.symbolHeight = Number(resolvedSymbolDefinition?.geometry?.height || props.symbolHeight || 80)
-      props.symbolOriginX = Number(resolvedSymbolDefinition?.geometry?.origin?.x || 0)
-      props.symbolOriginY = Number(resolvedSymbolDefinition?.geometry?.origin?.y || 0)
+      }))
+        || symbolComponentDefinition?.portGeometry.map(port => ({
+          name: String(port.name || ''),
+          schX: Number(port.schX || 0),
+          schY: Number(port.schY || 0)
+        }))
+        || importedSymbolComponentDefinition?.portGeometry.map(port => ({
+          name: String(port.name || ''),
+          schX: Number(port.schX || 0),
+          schY: Number(port.schY || 0)
+        }))
+        || []
+      props.symbolShapes = resolvedSymbolDefinition?.geometry?.shapes?.map(shape => ({ ...shape }))
+        || symbolComponentDefinition?.geometry?.shapes?.map(shape => ({ ...shape }))
+        || importedSymbolComponentDefinition?.geometry?.shapes?.map(shape => ({ ...shape }))
+        || []
+      props.symbolWidth = Number(
+        resolvedSymbolDefinition?.geometry?.width
+        || symbolComponentDefinition?.geometry?.width
+        || importedSymbolComponentDefinition?.geometry?.width
+        || props.symbolWidth
+        || 120
+      )
+      props.symbolHeight = Number(
+        resolvedSymbolDefinition?.geometry?.height
+        || symbolComponentDefinition?.geometry?.height
+        || importedSymbolComponentDefinition?.geometry?.height
+        || props.symbolHeight
+        || 80
+      )
+      props.symbolOriginX = Number(
+        resolvedSymbolDefinition?.geometry?.origin?.x
+        || symbolComponentDefinition?.geometry?.origin?.x
+        || importedSymbolComponentDefinition?.geometry?.origin?.x
+        || 0
+      )
+      props.symbolOriginY = Number(
+        resolvedSymbolDefinition?.geometry?.origin?.y
+        || symbolComponentDefinition?.geometry?.origin?.y
+        || importedSymbolComponentDefinition?.geometry?.origin?.y
+        || 0
+      )
       props.subcircuitPath = importedComponentPath || resolvedSymbolDefinition?.filePath || symbolComponentDefinition?.filePath || `symbols/${tagName}.tsx`
     } else if (!isKnownPart) {
       const ports = subcircuitDefinition?.ports
@@ -2419,6 +2455,19 @@ const traceEndpointRef = (component: PlacedComponent | undefined, pinName: strin
   return `.${cleanName} > .${pinName}`
 }
 
+const SCHEMATIC_PRIMITIVE_CATALOG_IDS = new Set([
+  'schematicline',
+  'schematicrect',
+  'schematiccircle',
+  'schematicarc',
+  'schematicpath',
+  'schematictext'
+])
+
+const isSymbolEditorPrimitiveComponent = (component: PlacedComponent): boolean => {
+  return SCHEMATIC_PRIMITIVE_CATALOG_IDS.has(component.catalogId)
+}
+
 const createGraphExportArtifacts = (
   components: PlacedComponent[],
   wires: WireConnection[]
@@ -2473,7 +2522,7 @@ const createGraphExportArtifacts = (
       const net = canonicalizeNetName(rawNet)
       const x = Number(component.props.schX || 0)
       const y = Number(component.props.schY || 0)
-      const explicit = component.props.layoutLocked === true || x !== 0 || y !== 0
+      const explicit = component.props.layoutLocked === true
       const bucket = labelsByNet.get(net) || []
       bucket.push({ x, y, explicit })
       labelsByNet.set(net, bucket)
@@ -2508,6 +2557,7 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
 
   const renderedComponents = components
     .filter(component => component.catalogId !== 'net' && component.catalogId !== 'netport' && component.catalogId !== 'netlabel')
+    .filter(component => !isSymbolEditorPrimitiveComponent(component))
     .map(component => createComponentSnippet(component, inSubcircuit, filePath))
     .filter(Boolean)
     .map(line => line.split('\n').map(inner => `    ${inner}`).join('\n'))
@@ -2765,6 +2815,7 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
 
   const renderedComponents = flatComponents
     .filter(component => component.catalogId !== 'net' && component.catalogId !== 'netport')
+    .filter(component => !isSymbolEditorPrimitiveComponent(component))
     .map(component => createComponentSnippet(component, false, effectiveRootPath))
     .filter(Boolean)
     .map(line => `    ${line}`)
