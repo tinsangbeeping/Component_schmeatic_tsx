@@ -1,6 +1,7 @@
 import ELK from 'elkjs'
 import { PlacedComponent } from '../types/catalog'
 import { getPinConfig } from '../types/schematic'
+import { filterLayoutCandidates, filterElkEdges } from './semanticLayout'
 
 const elk = new ELK()
 const GRID_SIZE = 20
@@ -195,7 +196,24 @@ export async function layoutCircuit(
   edges: Array<{ from: { componentId: string; pinName: string }; to: { componentId: string; pinName: string } }>
 ): Promise<LayoutResult> {
   try {
-    const nodes: LayoutNode[] = components.map((component) => {
+    // ── Semantic pre-filter ──────────────────────────────────────────────────
+    // net-markers (net, netport, netlabel, public-port) must NEVER be ELK nodes.
+    // They provide electrical merging only; they have no physical routing geometry.
+    const layoutComponents = filterLayoutCandidates(components)
+    const byId = new Map(components.map(c => [c.id, c]))
+
+    // Wrap raw edges as WireConnection-like objects so filterElkEdges can inspect them
+    const wireEdges = edges.map((e, i) => ({
+      id: `edge-${i}`,
+      from: e.from,
+      to: e.to,
+      routePoints: undefined as undefined,
+    }))
+    const filteredEdges = filterElkEdges(wireEdges as any, byId)
+    const filteredEdgeSet = new Set(filteredEdges.map(e => e.id))
+    const layoutEdges = edges.filter((_, i) => filteredEdgeSet.has(`edge-${i}`))
+
+    const nodes: LayoutNode[] = layoutComponents.map((component) => {
       const size = getNodeSize(component)
       const declaredPins = getLayoutPins(component)
 
@@ -228,7 +246,7 @@ export async function layoutCircuit(
       nodePortMap.set(node.id, new Set(node.ports.map(port => port.id)))
     })
 
-    const edgesList: LayoutEdge[] = edges
+    const edgesList: LayoutEdge[] = layoutEdges
       .map((edge, idx) => {
         const sourcePort = `${edge.from.componentId}.${edge.from.pinName}`
         const targetPort = `${edge.to.componentId}.${edge.to.pinName}`
