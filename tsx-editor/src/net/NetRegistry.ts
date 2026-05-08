@@ -4,7 +4,20 @@
  * Two calls to getNetId("VCC") will always return the same ID.
  * Comparison is case-insensitive ("vcc" and "VCC" are the same net).
  */
-export type NetRole = 'power' | 'ground' | 'signal' | 'analog' | 'unknown'
+export type NetRole =
+  | 'power'
+  | 'ground'
+  | 'analog'
+  | 'digital'
+  | 'spi'
+  | 'i2c'
+  | 'clock'
+  | 'reset'
+  | 'differential'
+  | 'signal'
+  | 'unknown'
+
+export type PowerDistributionStrategy = 'global-label' | 'local-island' | 'continuous-rail'
 
 export type NetSource = 'explicit-net' | 'netlabel' | 'trace' | 'connections' | 'inferred' | 'merge'
 
@@ -21,19 +34,43 @@ export const inferNetRole = (name: string): NetRole => {
   const token = normalizeNetToken(String(name || ''))
   if (!token) return 'unknown'
 
-  if (token === 'GND' || token.startsWith('VSS') || token.startsWith('VREGVSS')) return 'ground'
-  if (token === 'VCC' || token === 'VDD' || token.startsWith('DVDD') || token.startsWith('AVDD') || token.startsWith('IOVDD')) return 'power'
-  if (token.startsWith('DECOUPLE') || token.startsWith('VREGSW')) return 'analog'
-  if (token.startsWith('RESETN') || token.startsWith('BODEN') || token.startsWith('SWDIO') || token.startsWith('SWCLK')) return 'signal'
+  if (token === 'GND' || token.startsWith('AGND') || token.startsWith('DGND') || token.startsWith('VSS') || token.startsWith('VREGVSS')) return 'ground'
+  if (token === 'VCC' || token === 'VDD' || token.startsWith('DVDD') || token.startsWith('IOVDD') || token.startsWith('PVDD')) return 'power'
+  if (token.startsWith('AVDD') || token.startsWith('AREF') || token.startsWith('VREF') || token.startsWith('DECOUPLE') || token.startsWith('VREGSW')) return 'analog'
+  if (token === 'SCL' || token === 'SDA' || token.startsWith('I2C')) return 'i2c'
+  if (token === 'MOSI' || token === 'MISO' || token === 'SCK' || token === 'SCLK' || token.startsWith('CS') || token.startsWith('NSS') || token.startsWith('SPI')) return 'spi'
+  if (token.startsWith('CLK') || token.endsWith('CLK') || token.startsWith('XTAL')) return 'clock'
+  if (token.startsWith('RESET') || token === 'NRST' || token === 'RST') return 'reset'
+  if (token.endsWith('P') || token.endsWith('N') || token.includes('DIFF')) return 'differential'
+  if (token.startsWith('GPIO') || token.startsWith('SWD') || token.startsWith('JTAG')) return 'digital'
+  if (token.startsWith('D')) return 'digital'
+  if (token.startsWith('A')) return 'analog'
+  if (token.startsWith('SIG')) return 'signal'
   return 'unknown'
+}
+
+export const inferPowerDistributionStrategy = (name: string, role?: NetRole): PowerDistributionStrategy => {
+  const resolvedRole = role || inferNetRole(name)
+  const token = normalizeNetToken(String(name || ''))
+  if (resolvedRole === 'ground' || resolvedRole === 'power') return 'global-label'
+  if (resolvedRole === 'analog' && (token.includes('VDD') || token.includes('VREF') || token.includes('REF'))) {
+    return 'local-island'
+  }
+  return 'continuous-rail'
 }
 
 const ROLE_RANK: Record<NetRole, number> = {
   unknown: 0,
   signal: 1,
-  analog: 2,
-  power: 3,
-  ground: 3
+  digital: 2,
+  clock: 3,
+  reset: 3,
+  spi: 4,
+  i2c: 4,
+  differential: 5,
+  analog: 6,
+  power: 7,
+  ground: 8
 }
 
 export class NetRegistry {

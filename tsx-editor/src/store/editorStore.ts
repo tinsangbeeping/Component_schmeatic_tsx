@@ -33,6 +33,9 @@ import { ExposedPortSelection, FSMap, PlacedComponent, EditorState, SelectedPinR
 import { getPinConfig } from '../types/schematic'
 import { SCHEMATIC_COORD_SCALE, pixelToSchematic, schematicToPixel } from '../utils/coordinateScale'
 import { inferNetRole, NetRegistry, NetRole } from '../net/NetRegistry'
+import { inferPowerDistributionStrategy } from '../net/NetRegistry'
+import type { ExportGraph } from '../types/exportGraph'
+import { compileExportGraphToTSXNodes } from '../utils/exportCompiler'
 
 interface EditorStore extends EditorState {
   codeViewTab: 'source' | 'export'
@@ -1791,6 +1794,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         from: { componentId: fromId, pinName: fromRef.pinName },
         to: { componentId: toId, pinName: toRef.pinName },
         ...(routePoints ? { routePoints } : {}),
+        routingIntent: 'manual',
         tsxSnippet: ''
       })
       continue
@@ -1806,6 +1810,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         from: { componentId: fromId, pinName: fromRef.pinName },
         to: { componentId: netId, pinName: 'port' },
         ...(routePoints ? { routePoints } : {}),
+        routingIntent: 'manual',
         tsxSnippet: ''
       })
       continue
@@ -1821,6 +1826,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         from: { componentId: netId, pinName: 'port' },
         to: { componentId: toId, pinName: toRef.pinName },
         ...(routePoints ? { routePoints } : {}),
+        routingIntent: 'manual',
         tsxSnippet: ''
       })
       continue
@@ -1841,6 +1847,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         from: { componentId: fromId, pinName: 'port' },
         to: { componentId: toId, pinName: 'port' },
         ...(routePoints ? { routePoints } : {}),
+        routingIntent: 'manual',
         tsxSnippet: ''
       })
     }
@@ -1871,6 +1878,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         id: `wire-${filePath}-${traceIndex++}`,
         from: { componentId: component.id, pinName },
         to: { componentId: netComponentId, pinName: 'port' },
+        routingIntent: 'manual',
         tsxSnippet: ''
       })
     })
@@ -2401,6 +2409,7 @@ const createGraphExportArtifacts = (
   const netDeclarations: string[] = [] // never emit <net name="..." /> – not valid tscircuit JSX
 
   const traceSet = new Set<string>()
+  const exportGraph: ExportGraph = { nodes: [] }
 
   wires.forEach((wire) => {
     const fromComponent = byId.get(wire.from.componentId)
@@ -2409,10 +2418,24 @@ const createGraphExportArtifacts = (
     const toRef = traceEndpointRef(toComponent, wire.to.pinName)
     if (!fromRef || !toRef) return
 
-    const routePointsRaw = serializeTraceRoutePoints(wire.routePoints)
-    const routePointsAttr = routePointsRaw ? ` routePoints="${routePointsRaw}"` : ''
-    traceSet.add(`<trace from="${fromRef}" to="${toRef}"${routePointsAttr} />`)
+    exportGraph.nodes.push({
+      kind: 'trace',
+      from: fromRef,
+      to: toRef,
+      routePoints: wire.routePoints,
+      routingIntent: wire.routingIntent
+    })
   })
+
+  components
+    .filter(component => component.catalogId === 'netlabel')
+    .forEach((component) => {
+      const rawNet = String(component.props.net || component.props.netName || component.name || '').trim()
+      if (!rawNet) return
+      exportGraph.nodes.push({ kind: 'netlabel', net: canonicalizeNetName(rawNet) })
+    })
+
+  compileExportGraphToTSXNodes(exportGraph).forEach(snippet => traceSet.add(snippet))
 
   return {
     netDeclarations,
@@ -2427,7 +2450,7 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
   const lines: string[] = []
 
   const renderedComponents = components
-    .filter(component => component.catalogId !== 'net' && component.catalogId !== 'netport')
+    .filter(component => component.catalogId !== 'net' && component.catalogId !== 'netport' && component.catalogId !== 'netlabel')
     .map(component => createComponentSnippet(component, inSubcircuit, filePath))
     .filter(Boolean)
     .map(line => line.split('\n').map(inner => `    ${inner}`).join('\n'))
@@ -4095,6 +4118,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       })
 
       const newWires = state.wires.map((wire) => {
+        if (wire.routingIntent === 'manual' || wire.routingIntent === 'bus') {
+          return wire
+        }
         const routePoints = layoutResult.routes.get(wire.id)
         if (!routePoints || routePoints.length < 2) {
           const { routePoints: _routePoints, ...rest } = wire
@@ -4103,7 +4129,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
         return {
           ...wire,
-          routePoints
+          routePoints,
+          routingIntent: wire.routingIntent || 'orthogonal-auto'
         }
       })
 
@@ -4155,6 +4182,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     state.placedComponents.forEach((component) => {
       getAutoWireTargets(component).forEach(({ pinName, netName }) => {
+        const netRole = inferNetRole(netName)
+        const powerStrategy = inferPowerDistributionStrategy(netName, netRole)
+        // Default policy: GND/VCC/DVDD use global labels, not giant auto buses.
+        if (powerStrategy === 'global-label') {
+          return
+        }
+
         const pinAlreadyConnected = nextWires.some(wire =>
           (wire.from.componentId === component.id && wire.from.pinName === pinName) ||
           (wire.to.componentId === component.id && wire.to.pinName === pinName)
@@ -4172,7 +4206,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         nextWires.push({
           id: `wire-auto-${Date.now()}-${created}`,
           from: { componentId: component.id, pinName },
-          to: { componentId: netPort.id, pinName: 'port' }
+          to: { componentId: netPort.id, pinName: 'port' },
+          routingIntent: 'semantic-auto'
         })
         created += 1
       })

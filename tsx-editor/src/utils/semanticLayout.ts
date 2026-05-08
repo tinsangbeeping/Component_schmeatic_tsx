@@ -22,6 +22,7 @@
 
 import type { PlacedComponent, WireConnection } from '../types/catalog'
 import type { ElectricalTruthGraph, NetRole } from '../types/electricalTruth'
+import { inferNetRole, inferPowerDistributionStrategy } from '../net/NetRegistry'
 import type {
   SchematicViewGraph,
   SemanticCluster,
@@ -245,15 +246,34 @@ export function buildNetLayoutDirectives(
   for (const net of truthGraph.nets) {
     if (seen.has(net.name)) continue
     seen.add(net.name)
+    const role = inferNetRole(net.name)
+    const strategy = inferPowerDistributionStrategy(net.name, role)
     const base = defaultNetLayoutDirective(net.name)
+
+    if (strategy === 'global-label') {
+      directives.push({ netName: net.name, style: 'label', priority: 10, powerStrategy: strategy })
+      continue
+    }
+    if (strategy === 'local-island') {
+      directives.push({ netName: net.name, style: 'label', priority: 8, powerStrategy: strategy })
+      continue
+    }
+    if (role === 'spi' || role === 'i2c' || role === 'differential') {
+      directives.push({ netName: net.name, style: 'bus', priority: 7, powerStrategy: strategy })
+      continue
+    }
+    if (role === 'clock' || role === 'reset') {
+      directives.push({ netName: net.name, style: 'wire', priority: 6, powerStrategy: strategy })
+      continue
+    }
 
     // Override: if a net has more than 4 connections, prefer label to avoid long tangly wire
     const connectionCount = truthGraph.connections.filter(c => c.netId === net.id).length
     if (connectionCount > 4 && base.style === 'wire') {
-      directives.push({ netName: net.name, style: 'label', priority: 5 })
+      directives.push({ netName: net.name, style: 'label', priority: 5, powerStrategy: strategy })
       continue
     }
-    directives.push(base)
+    directives.push({ ...base, powerStrategy: strategy })
   }
 
   // Any net that remained (not in truthGraph) still applies defaults

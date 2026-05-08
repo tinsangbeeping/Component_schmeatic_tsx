@@ -60,6 +60,8 @@ export interface WireConnection {
     x: number
     y: number
   }>
+  // Editor-only metadata; not emitted as tscircuit JSX attribute.
+  routingIntent?: 'manual' | 'semantic-auto' | 'orthogonal-auto' | 'bus'
   tsxSnippet?: string
 }
 

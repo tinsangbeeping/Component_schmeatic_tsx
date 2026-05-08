@@ -39,6 +39,9 @@ export type VisualConnectionMode =
   | 'label-only'  // no line; net identity conveyed only by netlabel symbols at each endpoint
   | 'hidden'      // logical connection, no visual at all (useful for subcircuit boundaries)
 
+export type RoutingIntent = 'manual' | 'semantic-auto' | 'orthogonal-auto' | 'bus'
+export type PowerDistributionStrategy = 'global-label' | 'local-island' | 'continuous-rail'
+
 // ─── Placed visual elements ───────────────────────────────────────────────────
 
 /**
@@ -58,6 +61,7 @@ export type ViewWire = {
   /** Intermediate bend-points for orthogonal routing (editor display only) */
   routePoints?: Array<{ x: number; y: number }>
   mode: VisualConnectionMode
+  routingIntent?: RoutingIntent
   /** Electrical net this wire belongs to (assigned by ElectricalTruthGraph) */
   netId?: NetId
 }
@@ -190,6 +194,7 @@ export type NetLayoutStyle = 'wire' | 'label' | 'bus'
 export type NetLayoutDirective = {
   netName: string
   style: NetLayoutStyle
+  powerStrategy?: PowerDistributionStrategy
   /**
    * Priority for label-style nets: higher priority labels are placed
    * closer to their anchor component.
