@@ -95,7 +95,8 @@ export function extractNetlistFromGraph(
   components.forEach((component) => {
     const name = explicitNetName(component)
     if (!name) return
-    const key = endpointKey(component.id, component.catalogId === 'netlabel' ? 'port' : 'port')
+    // netlabel, netport, and net all use the same virtual 'port' pin as their anchor endpoint.
+    const key = endpointKey(component.id, 'port')
     uf.add(key)
     const existing = firstEndpointForNetName.get(name)
     if (existing) uf.union(existing, key)

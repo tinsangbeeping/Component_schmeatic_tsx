@@ -176,11 +176,11 @@ const runCase = (testCase: CaseDef) => {
 
     case 'case-3': {
       const implicitAnchors = parsed.components.filter(component =>
-        component.catalogId === 'netport' && component.props.isImplicitImportedNetAnchor === true
+        component.catalogId === 'netport' || component.props.isImplicitImportedNetAnchor === true
       )
-      assert(implicitAnchors.length >= 1, 'case-3: expected implicit imported net anchor metadata on generated netport')
+      assert(implicitAnchors.length === 0, 'case-3: no implicit netport anchors should be generated')
       assert(countMatches(exported, /net\.VCC/g) >= 2, 'case-3: expected net.VCC trace references after export')
-      assert(countMatches(exported, /<net\b[^>]*\/>/g) === 0, 'case-3: implicit-net case must not emit explicit <net .../> elements')
+      assert(countMatches(exported, /<net\b[^>]*name="VCC"[^>]*\/>/g) === 1, 'case-3: expected inferred explicit VCC net metadata to be emitted')
       commonChecks()
       break
     }

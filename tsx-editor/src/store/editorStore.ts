@@ -26,7 +26,6 @@ import {
   exportWorkspaceJson,
   importWorkspaceJson
 } from './workspaceFs'
-import { buildElectricalGraphModel } from '../net/electricalGraph'
 
 // Round 0 DEBUG — set to true in browser console: window.__NETPORT_DEBUG = true
 const NETPORT_DEBUG = () => typeof window !== 'undefined' && !!(window as any).__NETPORT_DEBUG
@@ -654,6 +653,47 @@ const parseComponentRef = (ref: string): { componentName: string; pinName: strin
   if (dotForm[1].toLowerCase() === 'net') return null
 
   return { componentName: dotForm[1], pinName: dotForm[2] }
+}
+
+const parseTraceRoutePoints = (raw: string | undefined): Array<{ x: number; y: number }> | undefined => {
+  if (!raw) return undefined
+  const trimmed = raw.trim()
+  if (!trimmed) return undefined
+
+  // Prefer compact schema: "x1,y1;x2,y2;..." but keep JSON fallback for compatibility.
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (!Array.isArray(parsed)) return undefined
+      const points = parsed
+        .map((point) => ({ x: Number(point?.x), y: Number(point?.y) }))
+        .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+      return points.length >= 2 ? points : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  const points = trimmed
+    .split(';')
+    .map(chunk => chunk.trim())
+    .filter(Boolean)
+    .map((chunk) => {
+      const [xRaw, yRaw] = chunk.split(',')
+      return { x: Number(xRaw), y: Number(yRaw) }
+    })
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+
+  return points.length >= 2 ? points : undefined
+}
+
+const serializeTraceRoutePoints = (routePoints: WireConnection['routePoints']): string | null => {
+  if (!Array.isArray(routePoints) || routePoints.length < 2) return null
+  const normalized = routePoints
+    .map(point => ({ x: Number(point.x), y: Number(point.y) }))
+    .filter(point => Number.isFinite(point.x) && Number.isFinite(point.y))
+  if (normalized.length < 2) return null
+  return normalized.map(point => `${point.x},${point.y}`).join(';')
 }
 
 const normalizePatchComponentSpec = (
@@ -1562,8 +1602,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     }
   }
 
-  const netPortComponents = new Map<string, string>()
-  const explicitNetComponents = new Map<string, string[]>()
+  const netEndpointByName = new Map<string, string>()
 
   components.forEach((component) => {
     if (component.catalogId === 'netport') {
@@ -1579,8 +1618,9 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         netRole: netRegistry.getNetRole(netId) || inferNetRole(netName),
         netName: netRegistry.getNetName(netId) || netName
       }
-      if (!netPortComponents.has(netId)) {
-        netPortComponents.set(netId, component.id)
+      const canonicalName = canonicalizeNetName(netRegistry.getNetName(netId) || netName)
+      if (!netEndpointByName.has(canonicalName)) {
+        netEndpointByName.set(canonicalName, component.id)
       }
       return
     }
@@ -1602,70 +1642,61 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       netId,
       netRole: netRegistry.getNetRole(netId) || explicitRole
     }
-    const bucket = explicitNetComponents.get(netId) || []
-    bucket.push(component.id)
-    explicitNetComponents.set(netId, bucket)
+    const canonicalName = canonicalizeNetName(netRegistry.getNetName(netId) || netName)
+    if (!netEndpointByName.has(canonicalName)) {
+      netEndpointByName.set(canonicalName, component.id)
+    }
   })
 
-  const _editorMeta = loadEditorMeta(fsMap)
+  const resolveExistingNetComponent = (portName: string): string | null => {
+    const canonicalName = canonicalizeNetName(portName)
+    const endpointId = netEndpointByName.get(canonicalName)
+    if (endpointId) return endpointId
+    return null
+  }
 
-  const createNetPort = (
-    portName: string,
-    nearX: number,
-    nearY: number,
-    options?: { implicitImported?: boolean }
-  ): string => {
-    const netId = netRegistry.registerNet(portName, {
-      role: inferNetRole(portName),
-      source: options?.implicitImported ? 'trace' : 'connections'
+  const ensureNetComponent = (portName: string): string => {
+    const existing = resolveExistingNetComponent(portName)
+    if (existing) return existing
+
+    const canonicalName = canonicalizeNetName(portName)
+    const netId = netRegistry.registerNet(canonicalName, {
+      role: inferNetRole(canonicalName),
+      source: 'inferred'
     })
-    const canonicalName = netRegistry.getNetName(netId) || portName
-    const netRole = netRegistry.getNetRole(netId) || inferNetRole(canonicalName)
 
-    if (!options?.implicitImported && netPortComponents.has(netId)) {
-      return netPortComponents.get(netId)!
-    }
-
-    const implicitSuffix = options?.implicitImported ? `-${components.filter(c => c.catalogId === 'netport' && c.props.netId === netId).length + 1}` : ''
-    const id = `net-${filePath}-${netId}${implicitSuffix}`
-    const index = netPortComponents.size
-    const savedAnchor = options?.implicitImported ? null : getNetAnchor(_editorMeta, filePath, canonicalName)
-    const schX = savedAnchor ? savedAnchor.schX : nearX + 24
-    const schY = savedAnchor ? savedAnchor.schY : nearY + (options?.implicitImported ? 0 : index * 12)
-    if (NETPORT_DEBUG()) console.log('[netport:create]', { netName: canonicalName, id, schX, schY, fromMeta: !!savedAnchor, kind: options?.implicitImported ? 'implicit-import' : 'generated-anchor' })
-    components.push({
-      id,
-      catalogId: 'netport',
+    const componentId = `comp-${filePath}-net-${canonicalName}-${components.length}`
+    const inferredNet: PlacedComponent = {
+      id: componentId,
+      catalogId: 'net',
       name: canonicalName,
       props: {
+        name: canonicalName,
         netId,
-        netName: canonicalName,
-        netRole,
-        netAnchorKind: options?.implicitImported ? 'implicit-import' : 'generated-anchor',
-        isImplicitImportedNetAnchor: !!options?.implicitImported,
-        schX,
-        schY
+        netRole: netRegistry.getNetRole(netId) || inferNetRole(canonicalName),
+        schX: 0,
+        schY: 0,
+        layoutLocked: true
       },
       tsxSnippet: ''
-    })
-
-    if (!options?.implicitImported) {
-      netPortComponents.set(netId, id)
     }
-    return id
+
+    components.push(inferredNet)
+    netEndpointByName.set(canonicalName, componentId)
+    return componentId
   }
 
-  const resolveNetComponent = (portName: string, nearX: number, nearY: number): string => {
-    return createNetPort(portName, nearX, nearY, { implicitImported: true })
-  }
-
-  const traceRegex = /<trace\s+from="([^"]+)"\s+to="([^"]+)"\s*\/>/g
+  const traceRegex = /<trace\b((?:[^"'>]|"[^"]*"|'[^']*')*)\/>/g
   let traceMatch
   let traceIndex = 0
 
   while ((traceMatch = traceRegex.exec(body)) !== null) {
-    const fromRaw = traceMatch[1]
-    const toRaw = traceMatch[2]
+    const attrs = traceMatch[1] || ''
+    const fromRaw = attrs.match(/\bfrom\s*=\s*(["'])(.*?)\1/)?.[2]
+    const toRaw = attrs.match(/\bto\s*=\s*(["'])(.*?)\1/)?.[2]
+    const routePointsRaw = attrs.match(/\broutePoints\s*=\s*(["'])(.*?)\1/)?.[2]
+    if (!fromRaw || !toRaw) continue
+    const routePoints = parseTraceRoutePoints(routePointsRaw)
 
     const fromRef = parseComponentRef(fromRaw)
     const toRef = parseComponentRef(toRaw)
@@ -1683,6 +1714,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         id: `wire-${filePath}-${traceIndex++}`,
         from: { componentId: fromId, pinName: fromRef.pinName },
         to: { componentId: toId, pinName: toRef.pinName },
+        ...(routePoints ? { routePoints } : {}),
         tsxSnippet: ''
       })
       continue
@@ -1692,12 +1724,12 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       const fromComponentName = importedNameMap.get(fromRef.componentName) || fromRef.componentName
       const fromId = nameToId.get(fromComponentName)
       if (!fromId) continue
-      const near = components.find(c => c.id === fromId)
-      const netId = resolveNetComponent(toNet[1], near?.props.schX || 0, near?.props.schY || 0)
+      const netId = ensureNetComponent(toNet[1])
       wires.push({
         id: `wire-${filePath}-${traceIndex++}`,
         from: { componentId: fromId, pinName: fromRef.pinName },
         to: { componentId: netId, pinName: 'port' },
+        ...(routePoints ? { routePoints } : {}),
         tsxSnippet: ''
       })
       continue
@@ -1707,12 +1739,12 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       const toComponentName = importedNameMap.get(toRef.componentName) || toRef.componentName
       const toId = nameToId.get(toComponentName)
       if (!toId) continue
-      const near = components.find(c => c.id === toId)
-      const netId = resolveNetComponent(fromNet[1], near?.props.schX || 0, near?.props.schY || 0)
+      const netId = ensureNetComponent(fromNet[1])
       wires.push({
         id: `wire-${filePath}-${traceIndex++}`,
         from: { componentId: netId, pinName: 'port' },
         to: { componentId: toId, pinName: toRef.pinName },
+        ...(routePoints ? { routePoints } : {}),
         tsxSnippet: ''
       })
       continue
@@ -1726,12 +1758,13 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         continue
       }
 
-      const fromId = resolveNetComponent(fromNet[1], 0, 0)
-      const toId = resolveNetComponent(toNet[1], 40, 0)
+      const fromId = ensureNetComponent(fromNet[1])
+      const toId = ensureNetComponent(toNet[1])
       wires.push({
         id: `wire-${filePath}-${traceIndex++}`,
         from: { componentId: fromId, pinName: 'port' },
         to: { componentId: toId, pinName: 'port' },
+        ...(routePoints ? { routePoints } : {}),
         tsxSnippet: ''
       })
     }
@@ -1750,7 +1783,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       if (!netName) return
 
       const pinName = normalizeConnectionPinName(component.props, rawPinName)
-      const netComponentId = resolveNetComponent(netName, Number(component.props.schX || 0), Number(component.props.schY || 0))
+      const netComponentId = ensureNetComponent(netName)
 
       const duplicate = wires.some((wire) => (
         (wire.from.componentId === component.id && wire.from.pinName === pinName && wire.to.componentId === netComponentId)
@@ -2227,8 +2260,19 @@ const traceEndpointRef = (component: PlacedComponent | undefined, pinName: strin
       return `.${cleanInstanceName} > .${cleanPortName}`
     }
   }
-  if (component.catalogId === 'netport' || component.catalogId === 'net') {
-    const rawNetName = String(component.props.netName || component.props.name || component.name || '').trim()
+  // netlabel, netport, and net all resolve to net.NETNAME selector (named-net reference)
+  if (
+    component.catalogId === 'netport' ||
+    component.catalogId === 'net' ||
+    component.catalogId === 'netlabel'
+  ) {
+    const rawNetName = String(
+      component.props.netName ||
+      component.props.net ||
+      component.props.name ||
+      component.name ||
+      ''
+    ).trim()
     if (!rawNetName) return null
     const netName = canonicalizeNetName(rawNetName)
     return `net.${netName}`
@@ -2249,74 +2293,37 @@ const createGraphExportArtifacts = (
   traceSnippets: string[]
   netComments: string[]
 } => {
-  const graph = buildElectricalGraphModel(components, wires)
   const byId = new Map(components.map(component => [component.id, component]))
-  const netNameById = new Map(
-    graph.nets.map(net => [net.id, canonicalizeNetName(String(net.name || net.id || 'NET'))])
-  )
 
-  const netDeclarations = graph.nets
-    .map(net => canonicalizeNetName(String(net.name || net.id || 'NET')))
+  // Internal 'net' canvas markers provide named-net identity for the editor;
+  // they must NOT be emitted as JSX – tscircuit nets are implicit via trace selectors.
+  // We still collect net names for potential comment annotation only.
+  const _internalNetNames = components
+    .filter(component => component.catalogId === 'net')
+    .map(component => canonicalizeNetName(String(component.props.name || component.name || '')))
     .filter(Boolean)
     .filter((name, index, arr) => arr.indexOf(name) === index)
     .sort((a, b) => a.localeCompare(b))
-    .map(name => `<net name="${name}" />`)
+  const netDeclarations: string[] = [] // never emit <net name="..." /> – not valid tscircuit JSX
 
   const traceSet = new Set<string>()
 
-  graph.connections.forEach((connection) => {
-    const netName = netNameById.get(connection.netId)
-    if (!netName) return
-    const netRef = `net.${netName}`
+  wires.forEach((wire) => {
+    const fromComponent = byId.get(wire.from.componentId)
+    const toComponent = byId.get(wire.to.componentId)
+    const fromRef = traceEndpointRef(fromComponent, wire.from.pinName)
+    const toRef = traceEndpointRef(toComponent, wire.to.pinName)
+    if (!fromRef || !toRef) return
 
-    if (connection.type === 'pin-to-net') {
-      const pinComponent = byId.get(connection.pin.componentId)
-      const pinRef = traceEndpointRef(pinComponent, connection.pin.pinName)
-      if (!pinRef) return
-      traceSet.add(`<trace from="${pinRef}" to="${netRef}" />`)
-      return
-    }
-
-    const portComponent = byId.get(connection.portId)
-    const portRef = traceEndpointRef(portComponent, 'port')
-    if (!portRef) return
-    traceSet.add(`<trace from="${portRef}" to="${netRef}" />`)
+    const routePointsRaw = serializeTraceRoutePoints(wire.routePoints)
+    const routePointsAttr = routePointsRaw ? ` routePoints="${routePointsRaw}"` : ''
+    traceSet.add(`<trace from="${fromRef}" to="${toRef}"${routePointsAttr} />`)
   })
-
-  const endpointsByNet = new Map<string, string[]>()
-  graph.connections.forEach((connection) => {
-    const bucket = endpointsByNet.get(connection.netId) || []
-    if (connection.type === 'pin-to-net') {
-      const component = byId.get(connection.pin.componentId)
-      if (component) {
-        bucket.push(`${component.name}.${connection.pin.pinName}`)
-      }
-    } else {
-      const component = byId.get(connection.portId)
-      if (component) {
-        bucket.push(`port.${component.name}`)
-      }
-    }
-    endpointsByNet.set(connection.netId, bucket)
-  })
-
-  const netComments = graph.nets
-    .map(net => {
-      const displayName = netNameById.get(net.id) || net.id
-      const endpoints = (endpointsByNet.get(net.id) || []).sort((a, b) => a.localeCompare(b))
-      const aliasSuffix = net.aliases && net.aliases.length > 0
-        ? ` aliases: ${net.aliases.join(', ')}`
-        : ''
-      if (endpoints.length === 0) {
-        return `    {/* net ${displayName}${aliasSuffix} */}`
-      }
-      return `    {/* net ${displayName}: ${endpoints.join(', ')}${aliasSuffix} */}`
-    })
 
   return {
     netDeclarations,
     traceSnippets: [...traceSet].sort((a, b) => a.localeCompare(b)),
-    netComments
+    netComments: []
   }
 }
 
