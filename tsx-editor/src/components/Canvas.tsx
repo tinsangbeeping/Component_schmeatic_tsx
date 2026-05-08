@@ -429,13 +429,48 @@ export const Canvas: React.FC = () => {
           return a.index - b.index
         })
 
-        return sorted.map((port) => {
-          const fallbackX = port.side === 'right' ? resolved.width : port.side === 'left' ? 0 : resolved.width / 2
-          const fallbackY = port.side === 'bottom' ? resolved.height : port.side === 'top' ? 0 : resolved.height / 2
+        const sideMembers: Record<'left' | 'right' | 'top' | 'bottom', number[]> = {
+          left: [],
+          right: [],
+          top: [],
+          bottom: []
+        }
+        sorted.forEach((port, index) => {
+          if (port.side) sideMembers[port.side].push(index)
+        })
+
+        const distributedCoord = (
+          members: number[],
+          selfIndex: number,
+          span: number
+        ): number => {
+          const rank = members.indexOf(selfIndex)
+          if (rank < 0 || members.length <= 1) return span / 2
+          return ((rank + 1) * span) / (members.length + 1)
+        }
+
+        return sorted.map((port, index) => {
+          let x = Number(port.x)
+          let y = Number(port.y)
+
+          if (port.side === 'left' || port.side === 'right') {
+            // Side-constrained pins: keep explicit y if provided, otherwise distribute vertically.
+            if (!Number.isFinite(x)) x = port.side === 'right' ? resolved.width : 0
+            if (!Number.isFinite(y)) y = distributedCoord(sideMembers[port.side], index, resolved.height)
+          } else if (port.side === 'top' || port.side === 'bottom') {
+            // Side-constrained pins: keep explicit x if provided, otherwise distribute horizontally.
+            if (!Number.isFinite(x)) x = distributedCoord(sideMembers[port.side], index, resolved.width)
+            if (!Number.isFinite(y)) y = port.side === 'bottom' ? resolved.height : 0
+          } else {
+            // Unknown side: keep explicit geometry if present, otherwise center fallback.
+            x = toFinite(x, resolved.width / 2)
+            y = toFinite(y, resolved.height / 2)
+          }
+
           return {
             name: port.name,
-            x: toFinite(port.x, fallbackX),
-            y: toFinite(port.y, fallbackY)
+            x,
+            y
           }
         })
       }
