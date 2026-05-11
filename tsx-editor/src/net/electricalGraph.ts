@@ -86,7 +86,12 @@ const getComponentBaseSize = (component: PlacedComponent): { width: number; heig
     const rows = Math.max(1, Math.ceil(portCount / 2))
     return { width: 150, height: Math.max(52, 34 + rows * 18) }
   }
-  if (component.catalogId === 'symbol-instance') return { width: 120, height: 56 }
+  if (component.catalogId === 'symbol-instance') {
+    return {
+      width: Math.max(20, Number(component.props.symbolWidth || 120)),
+      height: Math.max(20, Number(component.props.symbolHeight || 56))
+    }
+  }
 
   const schematic = getPinConfig(component.catalogId)
   return {
@@ -126,8 +131,19 @@ const getPinOffset = (component: PlacedComponent, pinName: string): Point => {
   }
 
   if (component.catalogId === 'symbol-instance') {
+    const explicitPorts = Array.isArray(component.props.symbolPorts)
+      ? (component.props.symbolPorts as Array<{ name?: string; schX?: number; schY?: number; x?: number; y?: number }>)
+      : []
+    const match = explicitPorts.find(port => String(port.name || '') === pinName)
+    if (match) {
+      return {
+        x: Number(match.schX ?? match.x ?? 0),
+        y: Number(match.schY ?? match.y ?? 0)
+      }
+    }
+
     const ports = ((component.props.ports as string[] | undefined) || []).map(String)
-    const width = 120
+    const width = Math.max(20, Number(component.props.symbolWidth || 120))
     const index = Math.max(0, ports.indexOf(pinName))
     const row = Math.floor(index / 2)
     const isLeft = index % 2 === 0

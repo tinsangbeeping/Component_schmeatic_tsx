@@ -16,6 +16,9 @@ import {
   buildImportedProjectState,
   buildSubcircuitRegistry,
   buildSymbolComponentRegistry,
+  buildWorkspaceComponentRegistry,
+  buildWorkspaceSymbolRegistry,
+  extractAllSymbols,
   extractPortsFromSubcircuitContent,
   resolveProjectPath,
   validateImports
@@ -26,7 +29,6 @@ import {
   exportWorkspaceJson,
   importWorkspaceJson
 } from './workspaceFs'
-import { buildElectricalGraphModel } from '../net/electricalGraph'
 
 // Round 0 DEBUG — set to true in browser console: window.__NETPORT_DEBUG = true
 const NETPORT_DEBUG = () => typeof window !== 'undefined' && !!(window as any).__NETPORT_DEBUG
@@ -34,6 +36,9 @@ import { ExposedPortSelection, FSMap, PlacedComponent, EditorState, SelectedPinR
 import { getPinConfig } from '../types/schematic'
 import { SCHEMATIC_COORD_SCALE, pixelToSchematic, schematicToPixel } from '../utils/coordinateScale'
 import { inferNetRole, NetRegistry, NetRole } from '../net/NetRegistry'
+import { inferPowerDistributionStrategy } from '../net/NetRegistry'
+import type { ExportGraph } from '../types/exportGraph'
+import { compileExportGraphToTSXNodes } from '../utils/exportCompiler'
 
 interface EditorStore extends EditorState {
   codeViewTab: 'source' | 'export'
@@ -126,6 +131,82 @@ const doesPathMatchDetectedKind = (filePath: string, kind: ReturnType<typeof det
 
 const isCanvasEditableFilePath = (filePath: string): boolean => {
   return isCanvasEditableFileType(classifyFilePath(filePath))
+}
+
+const CANVAS_GRAPH_STATE_VERSION = 1
+
+type PersistedCanvasGraphState = {
+  version: number
+  filePath: string
+  tsxDigest: string
+  components: PlacedComponent[]
+  wires: WireConnection[]
+}
+
+const getCanvasGraphStatePath = (filePath: string): string => {
+  const encoded = encodeURIComponent(filePath)
+  return `editor/state/${encoded}.json`
+}
+
+const computeStringDigest = (input: string): string => {
+  // Lightweight deterministic hash for stale-state detection.
+  let hash = 2166136261
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i)
+    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)
+  }
+  return (hash >>> 0).toString(16)
+}
+
+const readPersistedCanvasGraphState = (filePath: string, fsMap: FSMap): PersistedCanvasGraphState | null => {
+  const statePath = getCanvasGraphStatePath(filePath)
+  const raw = fsMap[statePath]
+  if (!raw) return null
+
+  try {
+    const parsed = JSON.parse(raw) as PersistedCanvasGraphState
+    if (parsed.version !== CANVAS_GRAPH_STATE_VERSION) return null
+    if (parsed.filePath !== filePath) return null
+    if (!Array.isArray(parsed.components) || !Array.isArray(parsed.wires)) return null
+
+    const content = fsMap[filePath] || ''
+    const digest = computeStringDigest(content)
+    if (parsed.tsxDigest !== digest) return null
+
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+const writePersistedCanvasGraphState = (
+  fsMap: FSMap,
+  filePath: string,
+  components: PlacedComponent[],
+  wires: WireConnection[]
+): FSMap => {
+  const statePath = getCanvasGraphStatePath(filePath)
+  const content = fsMap[filePath] || ''
+  const snapshot: PersistedCanvasGraphState = {
+    version: CANVAS_GRAPH_STATE_VERSION,
+    filePath,
+    tsxDigest: computeStringDigest(content),
+    components: components.map(component => ({
+      ...component,
+      props: { ...component.props }
+    })),
+    wires: wires.map(wire => ({
+      ...wire,
+      from: { ...wire.from },
+      to: { ...wire.to },
+      routePoints: wire.routePoints ? wire.routePoints.map(point => ({ ...point })) : undefined
+    }))
+  }
+
+  return {
+    ...fsMap,
+    [statePath]: JSON.stringify(snapshot)
+  }
 }
 
 const validateFilePlacement = (filePath: string, content: string): void => {
@@ -549,11 +630,26 @@ const regenerateSubcircuitIndex = (fsMap: FSMap): FSMap => {
 }
 
 const getWorkspaceSymbolNames = (fsMap: FSMap): Set<string> => {
-  return new Set(
-    Object.keys(fsMap)
-      .filter(path => path.startsWith('symbols/') && path.endsWith('.tsx'))
-      .map(path => path.replace('symbols/', '').replace('.tsx', ''))
-  )
+  const componentRegistry = buildWorkspaceComponentRegistry(fsMap)
+  const symbolRegistry = buildWorkspaceSymbolRegistry(fsMap)
+
+  return new Set([
+    ...Object.keys(componentRegistry),
+    ...Object.values(symbolRegistry).map(symbol => symbol.name),
+    ...Object.keys(symbolRegistry)
+  ])
+}
+
+const withWorkspaceRegistriesInMeta = (fsMap: FSMap): FSMap => {
+  const meta = loadEditorMeta(fsMap)
+  const symbolRegistry = buildWorkspaceSymbolRegistry(fsMap)
+  const componentRegistry = buildWorkspaceComponentRegistry(fsMap)
+
+  return saveEditorMeta(fsMap, {
+    ...meta,
+    symbolRegistry,
+    componentRegistry
+  })
 }
 
 const getRelativeImportPath = (fromFilePath: string, toFilePath: string): string => {
@@ -654,6 +750,47 @@ const parseComponentRef = (ref: string): { componentName: string; pinName: strin
   if (dotForm[1].toLowerCase() === 'net') return null
 
   return { componentName: dotForm[1], pinName: dotForm[2] }
+}
+
+const parseTraceRoutePoints = (raw: string | undefined): Array<{ x: number; y: number }> | undefined => {
+  if (!raw) return undefined
+  const trimmed = raw.trim()
+  if (!trimmed) return undefined
+
+  // Prefer compact schema: "x1,y1;x2,y2;..." but keep JSON fallback for compatibility.
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (!Array.isArray(parsed)) return undefined
+      const points = parsed
+        .map((point) => ({ x: Number(point?.x), y: Number(point?.y) }))
+        .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+      return points.length >= 2 ? points : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  const points = trimmed
+    .split(';')
+    .map(chunk => chunk.trim())
+    .filter(Boolean)
+    .map((chunk) => {
+      const [xRaw, yRaw] = chunk.split(',')
+      return { x: Number(xRaw), y: Number(yRaw) }
+    })
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+
+  return points.length >= 2 ? points : undefined
+}
+
+const serializeTraceRoutePoints = (routePoints: WireConnection['routePoints']): string | null => {
+  if (!Array.isArray(routePoints) || routePoints.length < 2) return null
+  const normalized = routePoints
+    .map(point => ({ x: Number(point.x), y: Number(point.y) }))
+    .filter(point => Number.isFinite(point.x) && Number.isFinite(point.y))
+  if (normalized.length < 2) return null
+  return normalized.map(point => `${point.x},${point.y}`).join(';')
 }
 
 const normalizePatchComponentSpec = (
@@ -948,20 +1085,10 @@ const mergeElectricalNets = (
     return component
   })
 
-  const mergedWires = wires.map((wire) => {
-    const remapEndpoint = (endpoint: { componentId: string; pinName: string }) => {
-      const comp = byId.get(endpoint.componentId)
-      if (!isNetLikeComponent(comp)) return endpoint
-      const repId = componentToRepresentative.get(endpoint.componentId) || endpoint.componentId
-      return { componentId: repId, pinName: 'port' }
-    }
-
-    return {
-      ...wire,
-      from: remapEndpoint(wire.from),
-      to: remapEndpoint(wire.to)
-    }
-  })
+  // Preserve original wire endpoints so each named-net anchor remains local.
+  // We only canonicalize component net metadata above; geometry should not be
+  // collapsed to a single representative endpoint.
+  const mergedWires = wires
 
   return {
     components: mergedComponents,
@@ -1311,7 +1438,18 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
   const content = fsMap[filePath] || ''
   const isSchematicFile = isSchematicFilePath(filePath)
   const isSubcircuitFile = filePath.startsWith('subcircuits/')
+  const workspaceSymbolRegistry = buildWorkspaceSymbolRegistry(fsMap)
+  const workspaceComponentRegistry = buildWorkspaceComponentRegistry(fsMap)
+  const workspaceComponentRegistryBySourcePath = new Map(
+    Object.values(workspaceComponentRegistry)
+      .filter(component => !!component.sourceFilePath)
+      .map(component => [String(component.sourceFilePath), component])
+  )
+  const normalizeSymbolRef = (ref: string): string => ref.trim().replace(/^\.?\/?symbols\//, '').replace(/\.(tsx|ts)$/i, '')
   const symbolNames = getWorkspaceSymbolNames(fsMap)
+  const symbolDefinitions = extractAllSymbols(fsMap)
+  const symbolDefinitionsByName = new Map(symbolDefinitions.map(symbol => [symbol.name, symbol]))
+  const symbolDefinitionsByPath = new Map(symbolDefinitions.map(symbol => [symbol.filePath, symbol]))
   const subcircuitRegistry = buildSubcircuitRegistry(fsMap)
   const symbolComponentRegistry = buildSymbolComponentRegistry(fsMap)
   const subcircuitRegistryByPath = new Map(Object.values(subcircuitRegistry).map(info => [info.filePath, info]))
@@ -1500,12 +1638,25 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     const isKnownPart = !isSheetReference && !isPublicPort && !!getCatalogItem(effectiveCatalogId)
     const id = `comp-${filePath}-${name}-${components.length}`
 
+    const importedComponentPath = importedComponentPaths.get(tagName)
+    const resolvedComponentDefinition = workspaceComponentRegistry[tagName]
+      || (importedComponentPath ? workspaceComponentRegistryBySourcePath.get(importedComponentPath) : undefined)
+    const resolvedWorkspaceSymbol = resolvedComponentDefinition?.symbolRef
+      ? workspaceSymbolRegistry[normalizeSymbolRef(resolvedComponentDefinition.symbolRef)]
+      : undefined
     const isSymbolReference = symbolNames.has(tagName)
+      || !!resolvedComponentDefinition
+      || (!!importedComponentPath && symbolDefinitionsByPath.has(importedComponentPath))
     const subcircuitDefinition = subcircuitRegistry[tagName]
     const symbolComponentDefinition = symbolComponentRegistry[tagName]
-    const importedComponentPath = importedComponentPaths.get(tagName)
     const importedSubcircuitDefinition = importedComponentPath ? subcircuitRegistryByPath.get(importedComponentPath) : undefined
     const importedSymbolComponentDefinition = importedComponentPath ? symbolComponentRegistryByPath.get(importedComponentPath) : undefined
+    const symbolComponentDefinitionAny = symbolComponentDefinition as any
+    const importedSymbolComponentDefinitionAny = importedSymbolComponentDefinition as any
+    const resolvedSymbolDefinition =
+      resolvedWorkspaceSymbol
+      || symbolDefinitionsByName.get(tagName)
+      || (importedComponentPath ? symbolDefinitionsByPath.get(importedComponentPath) : undefined)
 
     if (isSheetReference) {
       const rawSheetSrc = String(props.src || '')
@@ -1518,9 +1669,71 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     } else if (isPublicPort) {
       props.publicPortName = name
     } else if (isSymbolReference) {
-      props.symbolName = tagName
-      props.ports = symbolComponentDefinition?.ports || importedSymbolComponentDefinition?.ports || []
-      props.subcircuitPath = importedComponentPath || symbolComponentDefinition?.filePath || `symbols/${tagName}.tsx`
+      props.componentType = resolvedComponentDefinition?.componentType || tagName
+      props.symbolRef = resolvedComponentDefinition?.symbolRef || props.symbolRef
+      props.symbolName = resolvedComponentDefinition?.componentType || tagName
+      props.ports = resolvedComponentDefinition?.pins
+        || resolvedSymbolDefinition?.ports.map(port => port.name)
+        || symbolComponentDefinitionAny?.ports
+        || importedSymbolComponentDefinitionAny?.ports
+        || []
+      props.symbolPorts = resolvedSymbolDefinition?.ports.map(port => ({
+        name: port.name,
+        schX: Number(port.x || 0),
+        schY: Number(port.y || 0),
+        side: (port as any).side ?? undefined,
+        order: (port as any).order !== undefined ? Number((port as any).order) : undefined
+      }))
+        || symbolComponentDefinitionAny?.portGeometry?.map((port: any) => ({
+          name: String(port.name || ''),
+          schX: Number(port.schX || 0),
+          schY: Number(port.schY || 0),
+          side: port.side ?? undefined,
+          order: port.order !== undefined ? Number(port.order) : undefined
+        }))
+        || importedSymbolComponentDefinitionAny?.portGeometry?.map((port: any) => ({
+          name: String(port.name || ''),
+          schX: Number(port.schX || 0),
+          schY: Number(port.schY || 0),
+          side: port.side ?? undefined,
+          order: port.order !== undefined ? Number(port.order) : undefined
+        }))
+        || []
+      props.symbolShapes = resolvedSymbolDefinition?.geometry?.shapes?.map(shape => ({ ...shape }))
+        || symbolComponentDefinitionAny?.geometry?.shapes?.map((shape: any) => ({ ...shape }))
+        || importedSymbolComponentDefinitionAny?.geometry?.shapes?.map((shape: any) => ({ ...shape }))
+        || []
+      props.symbolWidth = Number(
+        resolvedSymbolDefinition?.geometry?.width
+        || symbolComponentDefinitionAny?.geometry?.width
+        || importedSymbolComponentDefinitionAny?.geometry?.width
+        || props.symbolWidth
+        || 120
+      )
+      props.symbolHeight = Number(
+        resolvedSymbolDefinition?.geometry?.height
+        || symbolComponentDefinitionAny?.geometry?.height
+        || importedSymbolComponentDefinitionAny?.geometry?.height
+        || props.symbolHeight
+        || 80
+      )
+      props.symbolOriginX = Number(
+        resolvedSymbolDefinition?.geometry?.origin?.x
+        || symbolComponentDefinitionAny?.geometry?.origin?.x
+        || importedSymbolComponentDefinitionAny?.geometry?.origin?.x
+        || 0
+      )
+      props.symbolOriginY = Number(
+        resolvedSymbolDefinition?.geometry?.origin?.y
+        || symbolComponentDefinitionAny?.geometry?.origin?.y
+        || importedSymbolComponentDefinitionAny?.geometry?.origin?.y
+        || 0
+      )
+      props.subcircuitPath = resolvedComponentDefinition?.sourceFilePath
+        || importedComponentPath
+        || resolvedSymbolDefinition?.filePath
+        || symbolComponentDefinitionAny?.filePath
+        || `symbols/${tagName}.tsx`
     } else if (!isKnownPart) {
       const ports = subcircuitDefinition?.ports
         || symbolComponentDefinition?.ports
@@ -1562,8 +1775,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     }
   }
 
-  const netPortComponents = new Map<string, string>()
-  const explicitNetComponents = new Map<string, string[]>()
+  const netEndpointByName = new Map<string, string>()
 
   components.forEach((component) => {
     if (component.catalogId === 'netport') {
@@ -1579,8 +1791,9 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         netRole: netRegistry.getNetRole(netId) || inferNetRole(netName),
         netName: netRegistry.getNetName(netId) || netName
       }
-      if (!netPortComponents.has(netId)) {
-        netPortComponents.set(netId, component.id)
+      const canonicalName = canonicalizeNetName(netRegistry.getNetName(netId) || netName)
+      if (!netEndpointByName.has(canonicalName)) {
+        netEndpointByName.set(canonicalName, component.id)
       }
       return
     }
@@ -1602,70 +1815,59 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       netId,
       netRole: netRegistry.getNetRole(netId) || explicitRole
     }
-    const bucket = explicitNetComponents.get(netId) || []
-    bucket.push(component.id)
-    explicitNetComponents.set(netId, bucket)
+    const canonicalName = canonicalizeNetName(netRegistry.getNetName(netId) || netName)
+    if (!netEndpointByName.has(canonicalName)) {
+      netEndpointByName.set(canonicalName, component.id)
+    }
   })
 
-  const _editorMeta = loadEditorMeta(fsMap)
+  const resolveExistingNetComponent = (portName: string): string | null => {
+    const canonicalName = canonicalizeNetName(portName)
+    const endpointId = netEndpointByName.get(canonicalName)
+    if (endpointId) return endpointId
+    return null
+  }
 
-  const createNetPort = (
-    portName: string,
-    nearX: number,
-    nearY: number,
-    options?: { implicitImported?: boolean }
-  ): string => {
-    const netId = netRegistry.registerNet(portName, {
-      role: inferNetRole(portName),
-      source: options?.implicitImported ? 'trace' : 'connections'
+  const ensureNetComponent = (portName: string): string => {
+    const canonicalName = canonicalizeNetName(portName)
+    const netId = netRegistry.registerNet(canonicalName, {
+      role: inferNetRole(canonicalName),
+      source: 'inferred'
     })
-    const canonicalName = netRegistry.getNetName(netId) || portName
-    const netRole = netRegistry.getNetRole(netId) || inferNetRole(canonicalName)
 
-    if (!options?.implicitImported && netPortComponents.has(netId)) {
-      return netPortComponents.get(netId)!
-    }
-
-    const implicitSuffix = options?.implicitImported ? `-${components.filter(c => c.catalogId === 'netport' && c.props.netId === netId).length + 1}` : ''
-    const id = `net-${filePath}-${netId}${implicitSuffix}`
-    const index = netPortComponents.size
-    const savedAnchor = options?.implicitImported ? null : getNetAnchor(_editorMeta, filePath, canonicalName)
-    const schX = savedAnchor ? savedAnchor.schX : nearX + 24
-    const schY = savedAnchor ? savedAnchor.schY : nearY + (options?.implicitImported ? 0 : index * 12)
-    if (NETPORT_DEBUG()) console.log('[netport:create]', { netName: canonicalName, id, schX, schY, fromMeta: !!savedAnchor, kind: options?.implicitImported ? 'implicit-import' : 'generated-anchor' })
-    components.push({
-      id,
+    // Keep inferred net references as local anchors so named nets don't collapse
+    // into one shared geometric hub in the canvas.
+    const componentId = `comp-${filePath}-netport-${canonicalName}-${components.length}-${traceIndex}`
+    const inferredNet: PlacedComponent = {
+      id: componentId,
       catalogId: 'netport',
       name: canonicalName,
       props: {
-        netId,
         netName: canonicalName,
-        netRole,
-        netAnchorKind: options?.implicitImported ? 'implicit-import' : 'generated-anchor',
-        isImplicitImportedNetAnchor: !!options?.implicitImported,
-        schX,
-        schY
+        netId,
+        netRole: netRegistry.getNetRole(netId) || inferNetRole(canonicalName),
+        schX: 0,
+        schY: 0,
+        layoutLocked: true
       },
       tsxSnippet: ''
-    })
-
-    if (!options?.implicitImported) {
-      netPortComponents.set(netId, id)
     }
-    return id
+
+    components.push(inferredNet)
+    return componentId
   }
 
-  const resolveNetComponent = (portName: string, nearX: number, nearY: number): string => {
-    return createNetPort(portName, nearX, nearY, { implicitImported: true })
-  }
-
-  const traceRegex = /<trace\s+from="([^"]+)"\s+to="([^"]+)"\s*\/>/g
+  const traceRegex = /<trace\b((?:[^"'>]|"[^"]*"|'[^']*')*)\/>/g
   let traceMatch
   let traceIndex = 0
 
   while ((traceMatch = traceRegex.exec(body)) !== null) {
-    const fromRaw = traceMatch[1]
-    const toRaw = traceMatch[2]
+    const attrs = traceMatch[1] || ''
+    const fromRaw = attrs.match(/\bfrom\s*=\s*(["'])(.*?)\1/)?.[2]
+    const toRaw = attrs.match(/\bto\s*=\s*(["'])(.*?)\1/)?.[2]
+    const routePointsRaw = attrs.match(/\broutePoints\s*=\s*(["'])(.*?)\1/)?.[2]
+    if (!fromRaw || !toRaw) continue
+    const routePoints = parseTraceRoutePoints(routePointsRaw)
 
     const fromRef = parseComponentRef(fromRaw)
     const toRef = parseComponentRef(toRaw)
@@ -1683,6 +1885,8 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         id: `wire-${filePath}-${traceIndex++}`,
         from: { componentId: fromId, pinName: fromRef.pinName },
         to: { componentId: toId, pinName: toRef.pinName },
+        ...(routePoints ? { routePoints } : {}),
+        routingIntent: 'manual',
         tsxSnippet: ''
       })
       continue
@@ -1692,12 +1896,13 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       const fromComponentName = importedNameMap.get(fromRef.componentName) || fromRef.componentName
       const fromId = nameToId.get(fromComponentName)
       if (!fromId) continue
-      const near = components.find(c => c.id === fromId)
-      const netId = resolveNetComponent(toNet[1], near?.props.schX || 0, near?.props.schY || 0)
+      const netId = ensureNetComponent(toNet[1])
       wires.push({
         id: `wire-${filePath}-${traceIndex++}`,
         from: { componentId: fromId, pinName: fromRef.pinName },
         to: { componentId: netId, pinName: 'port' },
+        ...(routePoints ? { routePoints } : {}),
+        routingIntent: 'manual',
         tsxSnippet: ''
       })
       continue
@@ -1707,12 +1912,13 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       const toComponentName = importedNameMap.get(toRef.componentName) || toRef.componentName
       const toId = nameToId.get(toComponentName)
       if (!toId) continue
-      const near = components.find(c => c.id === toId)
-      const netId = resolveNetComponent(fromNet[1], near?.props.schX || 0, near?.props.schY || 0)
+      const netId = ensureNetComponent(fromNet[1])
       wires.push({
         id: `wire-${filePath}-${traceIndex++}`,
         from: { componentId: netId, pinName: 'port' },
         to: { componentId: toId, pinName: toRef.pinName },
+        ...(routePoints ? { routePoints } : {}),
+        routingIntent: 'manual',
         tsxSnippet: ''
       })
       continue
@@ -1726,12 +1932,14 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         continue
       }
 
-      const fromId = resolveNetComponent(fromNet[1], 0, 0)
-      const toId = resolveNetComponent(toNet[1], 40, 0)
+      const fromId = ensureNetComponent(fromNet[1])
+      const toId = ensureNetComponent(toNet[1])
       wires.push({
         id: `wire-${filePath}-${traceIndex++}`,
         from: { componentId: fromId, pinName: 'port' },
         to: { componentId: toId, pinName: 'port' },
+        ...(routePoints ? { routePoints } : {}),
+        routingIntent: 'manual',
         tsxSnippet: ''
       })
     }
@@ -1750,7 +1958,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       if (!netName) return
 
       const pinName = normalizeConnectionPinName(component.props, rawPinName)
-      const netComponentId = resolveNetComponent(netName, Number(component.props.schX || 0), Number(component.props.schY || 0))
+      const netComponentId = ensureNetComponent(netName)
 
       const duplicate = wires.some((wire) => (
         (wire.from.componentId === component.id && wire.from.pinName === pinName && wire.to.componentId === netComponentId)
@@ -1762,6 +1970,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         id: `wire-${filePath}-${traceIndex++}`,
         from: { componentId: component.id, pinName },
         to: { componentId: netComponentId, pinName: 'port' },
+        routingIntent: 'manual',
         tsxSnippet: ''
       })
     })
@@ -1827,19 +2036,39 @@ const getCanvasStateForFile = (filePath: string, fsMap: FSMap): { components: Pl
     return { components: [], wires: [] }
   }
 
+  const persisted = readPersistedCanvasGraphState(filePath, fsMap)
+  if (persisted) {
+    return {
+      components: persisted.components.map(component => ({
+        ...component,
+        props: { ...component.props }
+      })),
+      wires: persisted.wires.map(wire => ({
+        ...wire,
+        from: { ...wire.from },
+        to: { ...wire.to },
+        routePoints: wire.routePoints ? wire.routePoints.map(point => ({ ...point })) : undefined
+      }))
+    }
+  }
+
   return parseFileToCanvas(filePath, fsMap)
 }
 
 const syncActiveCanvasFile = (state: Pick<EditorState, 'activeFilePath' | 'fsMap' | 'placedComponents' | 'wires'>): FSMap => {
   if (!isCanvasEditableFilePath(state.activeFilePath)) {
-    return regenerateSubcircuitIndex({ ...state.fsMap })
+    return withWorkspaceRegistriesInMeta(regenerateSubcircuitIndex({ ...state.fsMap }))
   }
 
   const currentContent = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
-  return regenerateSubcircuitIndex({
+  const withSource = regenerateSubcircuitIndex({
     ...state.fsMap,
     [state.activeFilePath]: currentContent
   })
+
+  return withWorkspaceRegistriesInMeta(
+    writePersistedCanvasGraphState(withSource, state.activeFilePath, state.placedComponents, state.wires)
+  )
 }
 
 const buildPersistedCanvasState = (
@@ -1854,7 +2083,7 @@ const buildPersistedCanvasState = (
 
   const fsMap = isCanvasEditableFilePath(activeFilePath)
     ? syncActiveCanvasFile({ activeFilePath, fsMap: fsMapBase, placedComponents, wires })
-    : regenerateSubcircuitIndex({ ...fsMapBase })
+    : withWorkspaceRegistriesInMeta(regenerateSubcircuitIndex({ ...fsMapBase }))
 
   const workspaces = {
     ...state.workspaces,
@@ -1952,6 +2181,11 @@ const getSelectablePinsForComponent = (component: PlacedComponent): string[] => 
   }
 
   if (component.catalogId === 'symbol-instance') {
+    const fromGeometry = Array.isArray(component.props.symbolPorts)
+      ? (component.props.symbolPorts as Array<{ name?: string }>).map(port => String(port.name || '').trim()).filter(Boolean)
+      : []
+    if (fromGeometry.length > 0) return fromGeometry
+
     const ports = ((component.props.ports as string[] | undefined) || []).map(String).filter(Boolean)
     return ports
   }
@@ -2085,10 +2319,18 @@ const toAttrList = (props: Record<string, any>): string[] => {
       'schRotation',
       'subcircuitName',
       'subcircuitPath',
+      'componentType',
+      'symbolRef',
       'sheetName',
       'sheetPath',
       'src',
       'ports',
+      'symbolPorts',
+      'symbolShapes',
+      'symbolWidth',
+      'symbolHeight',
+      'symbolOriginX',
+      'symbolOriginY',
       'netName',
       'netId',
       'netAnchorKind',
@@ -2227,8 +2469,19 @@ const traceEndpointRef = (component: PlacedComponent | undefined, pinName: strin
       return `.${cleanInstanceName} > .${cleanPortName}`
     }
   }
-  if (component.catalogId === 'netport' || component.catalogId === 'net') {
-    const rawNetName = String(component.props.netName || component.props.name || component.name || '').trim()
+  // netlabel, netport, and net all resolve to net.NETNAME selector (named-net reference)
+  if (
+    component.catalogId === 'netport' ||
+    component.catalogId === 'net' ||
+    component.catalogId === 'netlabel'
+  ) {
+    const rawNetName = String(
+      component.props.netName ||
+      component.props.net ||
+      component.props.name ||
+      component.name ||
+      ''
+    ).trim()
     if (!rawNetName) return null
     const netName = canonicalizeNetName(rawNetName)
     return `net.${netName}`
@@ -2241,6 +2494,19 @@ const traceEndpointRef = (component: PlacedComponent | undefined, pinName: strin
   return `.${cleanName} > .${pinName}`
 }
 
+const SCHEMATIC_PRIMITIVE_CATALOG_IDS = new Set([
+  'schematicline',
+  'schematicrect',
+  'schematiccircle',
+  'schematicarc',
+  'schematicpath',
+  'schematictext'
+])
+
+const isSymbolEditorPrimitiveComponent = (component: PlacedComponent): boolean => {
+  return SCHEMATIC_PRIMITIVE_CATALOG_IDS.has(component.catalogId)
+}
+
 const createGraphExportArtifacts = (
   components: PlacedComponent[],
   wires: WireConnection[]
@@ -2249,74 +2515,77 @@ const createGraphExportArtifacts = (
   traceSnippets: string[]
   netComments: string[]
 } => {
-  const graph = buildElectricalGraphModel(components, wires)
   const byId = new Map(components.map(component => [component.id, component]))
-  const netNameById = new Map(
-    graph.nets.map(net => [net.id, canonicalizeNetName(String(net.name || net.id || 'NET'))])
-  )
 
-  const netDeclarations = graph.nets
-    .map(net => canonicalizeNetName(String(net.name || net.id || 'NET')))
+  // Internal 'net' canvas markers provide named-net identity for the editor;
+  // they must NOT be emitted as JSX – tscircuit nets are implicit via trace selectors.
+  // We still collect net names for potential comment annotation only.
+  const _internalNetNames = components
+    .filter(component => component.catalogId === 'net')
+    .map(component => canonicalizeNetName(String(component.props.name || component.name || '')))
     .filter(Boolean)
     .filter((name, index, arr) => arr.indexOf(name) === index)
     .sort((a, b) => a.localeCompare(b))
-    .map(name => `<net name="${name}" />`)
+  const netDeclarations: string[] = [] // never emit <net name="..." /> – not valid tscircuit JSX
 
   const traceSet = new Set<string>()
+  const exportGraph: ExportGraph = { nodes: [] }
 
-  graph.connections.forEach((connection) => {
-    const netName = netNameById.get(connection.netId)
-    if (!netName) return
-    const netRef = `net.${netName}`
+  wires.forEach((wire) => {
+    const fromComponent = byId.get(wire.from.componentId)
+    const toComponent = byId.get(wire.to.componentId)
+    const fromRef = traceEndpointRef(fromComponent, wire.from.pinName)
+    const toRef = traceEndpointRef(toComponent, wire.to.pinName)
+    if (!fromRef || !toRef) return
+    if (fromRef === toRef) return
 
-    if (connection.type === 'pin-to-net') {
-      const pinComponent = byId.get(connection.pin.componentId)
-      const pinRef = traceEndpointRef(pinComponent, connection.pin.pinName)
-      if (!pinRef) return
-      traceSet.add(`<trace from="${pinRef}" to="${netRef}" />`)
+    // Avoid exporting abstract net-to-net edges that explode into unreadable netlist-style wiring.
+    if (fromRef.startsWith('net.') && toRef.startsWith('net.')) return
+
+    exportGraph.nodes.push({
+      kind: 'trace',
+      from: fromRef,
+      to: toRef,
+      routePoints: wire.routePoints,
+      routingIntent: wire.routingIntent
+    })
+  })
+
+  const labelsByNet = new Map<string, Array<{ x: number; y: number; explicit: boolean }>>()
+  components
+    .filter(component => component.catalogId === 'netlabel')
+    .filter(component => component.props.internalHelper !== true)
+    .forEach((component) => {
+      const rawNet = String(component.props.net || component.props.netName || component.name || '').trim()
+      if (!rawNet) return
+      const net = canonicalizeNetName(rawNet)
+      const x = Number(component.props.schX || 0)
+      const y = Number(component.props.schY || 0)
+      const explicit = component.props.layoutLocked === true
+      const bucket = labelsByNet.get(net) || []
+      bucket.push({ x, y, explicit })
+      labelsByNet.set(net, bucket)
+    })
+
+  labelsByNet.forEach((labels, net) => {
+    const explicitLabels = labels.filter(label => label.explicit)
+    if (explicitLabels.length > 0) {
+      exportGraph.nodes.push({ kind: 'netlabel', net })
       return
     }
 
-    const portComponent = byId.get(connection.portId)
-    const portRef = traceEndpointRef(portComponent, 'port')
-    if (!portRef) return
-    traceSet.add(`<trace from="${portRef}" to="${netRef}" />`)
-  })
-
-  const endpointsByNet = new Map<string, string[]>()
-  graph.connections.forEach((connection) => {
-    const bucket = endpointsByNet.get(connection.netId) || []
-    if (connection.type === 'pin-to-net') {
-      const component = byId.get(connection.pin.componentId)
-      if (component) {
-        bucket.push(`${component.name}.${connection.pin.pinName}`)
-      }
-    } else {
-      const component = byId.get(connection.portId)
-      if (component) {
-        bucket.push(`port.${component.name}`)
-      }
+    // If there are only default/unpositioned labels, emit at most one explicit netlabel.
+    if (labels.length > 0) {
+      exportGraph.nodes.push({ kind: 'netlabel', net })
     }
-    endpointsByNet.set(connection.netId, bucket)
   })
 
-  const netComments = graph.nets
-    .map(net => {
-      const displayName = netNameById.get(net.id) || net.id
-      const endpoints = (endpointsByNet.get(net.id) || []).sort((a, b) => a.localeCompare(b))
-      const aliasSuffix = net.aliases && net.aliases.length > 0
-        ? ` aliases: ${net.aliases.join(', ')}`
-        : ''
-      if (endpoints.length === 0) {
-        return `    {/* net ${displayName}${aliasSuffix} */}`
-      }
-      return `    {/* net ${displayName}: ${endpoints.join(', ')}${aliasSuffix} */}`
-    })
+  compileExportGraphToTSXNodes(exportGraph).forEach(snippet => traceSet.add(snippet))
 
   return {
     netDeclarations,
     traceSnippets: [...traceSet].sort((a, b) => a.localeCompare(b)),
-    netComments
+    netComments: []
   }
 }
 
@@ -2326,7 +2595,8 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
   const lines: string[] = []
 
   const renderedComponents = components
-    .filter(component => component.catalogId !== 'net' && component.catalogId !== 'netport')
+    .filter(component => component.catalogId !== 'net' && component.catalogId !== 'netport' && component.catalogId !== 'netlabel')
+    .filter(component => !isSymbolEditorPrimitiveComponent(component))
     .map(component => createComponentSnippet(component, inSubcircuit, filePath))
     .filter(Boolean)
     .map(line => line.split('\n').map(inner => `    ${inner}`).join('\n'))
@@ -2355,12 +2625,16 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
         }
       })
 
-    const symbolImportSet = new Set(
-      components
-        .filter(c => c.catalogId === 'symbol-instance')
-        .map(c => c.props.symbolName as string)
-        .filter(Boolean)
-    )
+    const symbolImportMap = new Map<string, string>()
+    components
+      .filter(c => c.catalogId === 'symbol-instance')
+      .forEach((component) => {
+        const symbolName = String(component.props.symbolName || component.name || '').trim()
+        const symbolPath = String(component.props.subcircuitPath || `symbols/${symbolName}.tsx`).trim()
+        if (symbolName && symbolPath) {
+          symbolImportMap.set(symbolName, symbolPath)
+        }
+      })
 
     const subImports = [...subImportMap.entries()]
       .filter(([, importFilePath]) => !importFilePath.startsWith('symbols/'))
@@ -2370,14 +2644,9 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
       .filter(([, importFilePath]) => importFilePath.startsWith('symbols/'))
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([name, importFilePath]) => `import ${name} from "${getRelativeImportPath(filePath, importFilePath)}"`)
-    const symbolImports = [...symbolImportSet]
-      .sort()
-      .map(name => {
-        const importPrefix = filePath.startsWith('schematics/') ? '../symbols' : './'
-        return importPrefix === './'
-          ? `import { ${name} } from "./${name}"`
-          : `import { ${name} } from "${importPrefix}/${name}"`
-      })
+    const symbolImports = [...symbolImportMap.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([symbolName, symbolPath]) => `import ${symbolName} from "${getRelativeImportPath(filePath, symbolPath)}"`)
 
     const imports = [...subImports, ...symbolComponentImports, ...symbolImports].join('\n')
 
@@ -2452,7 +2721,7 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
   const parseCached = (filePath: string): { components: PlacedComponent[]; wires: WireConnection[] } => {
     const existing = parsedCache.get(filePath)
     if (existing) return existing
-    const parsed = parseFileToCanvas(filePath, fsMap)
+    const parsed = getCanvasStateForFile(filePath, fsMap)
     parsedCache.set(filePath, parsed)
     return parsed
   }
@@ -2585,6 +2854,7 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
 
   const renderedComponents = flatComponents
     .filter(component => component.catalogId !== 'net' && component.catalogId !== 'netport')
+    .filter(component => !isSymbolEditorPrimitiveComponent(component))
     .map(component => createComponentSnippet(component, false, effectiveRootPath))
     .filter(Boolean)
     .map(line => `    ${line}`)
@@ -2648,18 +2918,21 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const state = get()
     const normalizedFiles = normalizeWorkspaceFileSelection(next, state.activeFilePath, state.openFilePaths)
     const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, next)
+    const withSnapshot = isCanvasEditableFilePath(normalizedFiles.activeFilePath)
+      ? writePersistedCanvasGraphState(next, normalizedFiles.activeFilePath, parsed.components, parsed.wires)
+      : next
     const nextWorkspaces = {
       ...state.workspaces,
       [state.activeWorkspaceId]: {
         ...state.workspaces[state.activeWorkspaceId],
-        fsMap: next,
+        fsMap: withSnapshot,
         activeFilePath: normalizedFiles.activeFilePath,
         openFilePaths: normalizedFiles.openFilePaths
       }
     }
     saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
     set({
-      fsMap: next,
+      fsMap: withSnapshot,
       workspaces: nextWorkspaces,
       activeFilePath: normalizedFiles.activeFilePath,
       openFilePaths: normalizedFiles.openFilePaths,
@@ -2699,22 +2972,25 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       ? state.openFilePaths
       : [...state.openFilePaths, filePath]
     const normalizedFiles = normalizeWorkspaceFileSelection(fsMap, filePath, nextOpenFilePaths)
+    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, fsMap)
+    const nextFsMap = isCanvasEditableFilePath(normalizedFiles.activeFilePath)
+      ? writePersistedCanvasGraphState(fsMap, normalizedFiles.activeFilePath, parsed.components, parsed.wires)
+      : fsMap
+    const renormalizedFiles = normalizeWorkspaceFileSelection(nextFsMap, normalizedFiles.activeFilePath, normalizedFiles.openFilePaths)
     const nextWorkspaces = {
       ...state.workspaces,
       [state.activeWorkspaceId]: {
         ...state.workspaces[state.activeWorkspaceId],
-        fsMap,
-        activeFilePath: normalizedFiles.activeFilePath,
-        openFilePaths: normalizedFiles.openFilePaths
+        fsMap: nextFsMap,
+        activeFilePath: renormalizedFiles.activeFilePath,
+        openFilePaths: renormalizedFiles.openFilePaths
       }
     }
-
-    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, fsMap)
     saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
     set({
-      fsMap,
-      activeFilePath: normalizedFiles.activeFilePath,
-      openFilePaths: normalizedFiles.openFilePaths,
+      fsMap: nextFsMap,
+      activeFilePath: renormalizedFiles.activeFilePath,
+      openFilePaths: renormalizedFiles.openFilePaths,
       workspaces: nextWorkspaces,
       placedComponents: parsed.components,
       wires: parsed.wires,
@@ -2741,9 +3017,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       saveFSMapToStorage(fsMap)
     }
 
-    const parsed = parseFileToCanvas(filePath, fsMap)
+    const parsed = getCanvasStateForFile(filePath, fsMap)
+    const fsMapWithSnapshot = writePersistedCanvasGraphState(fsMap, filePath, parsed.components, parsed.wires)
     set({
-      fsMap,
+      fsMap: fsMapWithSnapshot,
       activeFilePath: filePath,
       breadcrumbStack: [...state.breadcrumbStack, state.activeFilePath],
       placedComponents: parsed.components,
@@ -3709,12 +3986,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     Object.keys(syncedFiles)
       .filter(path => isSchematicFilePath(path) || (path.startsWith('subcircuits/') && path.endsWith('.tsx')))
       .forEach((path) => {
-        const parsed = parseFileToCanvas(path, syncedFiles)
+        const parsed = getCanvasStateForFile(path, syncedFiles)
         const selectorErrors = validateWireSelectorsForExport(path, parsed.components, parsed.wires)
         if (selectorErrors.length > 0) {
           throw new Error(`Invalid trace selector(s) found before export:\n${selectorErrors.join('\n')}`)
         }
-        syncedFiles[path] = generateFileTSX(path, parsed.components, parsed.wires)
+        const generated = generateFileTSX(path, parsed.components, parsed.wires)
+        syncedFiles[path] = generated
+        const withSnapshot = writePersistedCanvasGraphState(syncedFiles, path, parsed.components, parsed.wires)
+        Object.assign(syncedFiles, withSnapshot)
       })
 
     const files = regenerateSubcircuitIndex(syncedFiles)
@@ -3732,8 +4012,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     Object.keys(syncedFiles)
       .filter(path => isSchematicFilePath(path) || (path.startsWith('subcircuits/') && path.endsWith('.tsx')))
       .forEach((path) => {
-        const parsed = parseFileToCanvas(path, syncedFiles)
-        syncedFiles[path] = generateFileTSX(path, parsed.components, parsed.wires)
+        const parsed = getCanvasStateForFile(path, syncedFiles)
+        const generated = generateFileTSX(path, parsed.components, parsed.wires)
+        syncedFiles[path] = generated
+        const withSnapshot = writePersistedCanvasGraphState(syncedFiles, path, parsed.components, parsed.wires)
+        Object.assign(syncedFiles, withSnapshot)
       })
 
     const files = regenerateSubcircuitIndex(syncedFiles)
@@ -3806,11 +4089,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     const normalizedFiles = normalizeWorkspaceFileSelection(nextFsMap, targetFilePath, nextOpenFilePaths)
     const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, nextFsMap)
+    // Keep imported TSX as-is to preserve original schematic flow.
+    // Internal graph becomes source-of-truth via sidecar snapshot.
     const syncedFsMap = isCanvasEditableFilePath(normalizedFiles.activeFilePath)
-      ? regenerateSubcircuitIndex({
-          ...nextFsMap,
-          [normalizedFiles.activeFilePath]: generateFileTSX(normalizedFiles.activeFilePath, parsed.components, parsed.wires)
-        })
+      ? writePersistedCanvasGraphState(nextFsMap, normalizedFiles.activeFilePath, parsed.components, parsed.wires)
       : nextFsMap
     const nextWorkspaces = {
       ...state.workspaces,
@@ -3910,12 +4192,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       || importedProject.entryFiles[0]
       || state.activeFilePath
     const normalizedFiles = normalizeWorkspaceFileSelection(nextFsMap, preferredActivePath, nextOpenFilePaths)
-    const syncedFsMapSeed = { ...nextFsMap }
+    let syncedFsMapSeed = { ...nextFsMap }
     Object.keys(syncedFsMapSeed)
       .filter(path => isCanvasEditableFilePath(path))
       .forEach((path) => {
-        const parsedFile = parseFileToCanvas(path, syncedFsMapSeed)
-        syncedFsMapSeed[path] = generateFileTSX(path, parsedFile.components, parsedFile.wires)
+        const parsedFile = getCanvasStateForFile(path, syncedFsMapSeed)
+        syncedFsMapSeed = writePersistedCanvasGraphState(syncedFsMapSeed, path, parsedFile.components, parsedFile.wires)
       })
     const syncedFsMap = regenerateSubcircuitIndex(syncedFsMapSeed)
     const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, syncedFsMap)
@@ -3982,6 +4264,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       })
 
       const newWires = state.wires.map((wire) => {
+        if (wire.routingIntent === 'manual' || wire.routingIntent === 'bus') {
+          return wire
+        }
         const routePoints = layoutResult.routes.get(wire.id)
         if (!routePoints || routePoints.length < 2) {
           const { routePoints: _routePoints, ...rest } = wire
@@ -3990,7 +4275,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
         return {
           ...wire,
-          routePoints
+          routePoints,
+          routingIntent: wire.routingIntent || 'orthogonal-auto'
         }
       })
 
@@ -4042,6 +4328,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     state.placedComponents.forEach((component) => {
       getAutoWireTargets(component).forEach(({ pinName, netName }) => {
+        const netRole = inferNetRole(netName)
+        const powerStrategy = inferPowerDistributionStrategy(netName, netRole)
+        // Default policy: GND/VCC/DVDD use global labels, not giant auto buses.
+        if (powerStrategy === 'global-label') {
+          return
+        }
+
         const pinAlreadyConnected = nextWires.some(wire =>
           (wire.from.componentId === component.id && wire.from.pinName === pinName) ||
           (wire.to.componentId === component.id && wire.to.pinName === pinName)
@@ -4059,7 +4352,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         nextWires.push({
           id: `wire-auto-${Date.now()}-${created}`,
           from: { componentId: component.id, pinName },
-          to: { componentId: netPort.id, pinName: 'port' }
+          to: { componentId: netPort.id, pinName: 'port' },
+          routingIntent: 'semantic-auto'
         })
         created += 1
       })
@@ -4310,11 +4604,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const nextWorkspaces = { ...state.workspaces, [id]: newWs }
     // Switch to the new workspace
     const parsed = getCanvasStateForFile(SCHEMATIC_MAIN_PATH, newWs.fsMap)
-    saveWorkspacesToStorage(nextWorkspaces, id)
+    const fsMapWithSnapshot = writePersistedCanvasGraphState(newWs.fsMap, SCHEMATIC_MAIN_PATH, parsed.components, parsed.wires)
+    const workspaceWithSnapshot: WorkspaceData = {
+      ...newWs,
+      fsMap: fsMapWithSnapshot
+    }
+    const nextWorkspacesWithSnapshot = { ...state.workspaces, [id]: workspaceWithSnapshot }
+    saveWorkspacesToStorage(nextWorkspacesWithSnapshot, id)
     set({
-      workspaces: nextWorkspaces,
+      workspaces: nextWorkspacesWithSnapshot,
       activeWorkspaceId: id,
-      fsMap: newWs.fsMap,
+      fsMap: fsMapWithSnapshot,
       activeFilePath: SCHEMATIC_MAIN_PATH,
       openFilePaths: [SCHEMATIC_MAIN_PATH],
       placedComponents: parsed.components,
@@ -4353,16 +4653,22 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const normalizedTarget = normalizeWorkspaceData(target)
 
     const parsed = getCanvasStateForFile(normalizedTarget.activeFilePath, normalizedTarget.fsMap)
+    const targetFsMapWithSnapshot = isCanvasEditableFilePath(normalizedTarget.activeFilePath)
+      ? writePersistedCanvasGraphState(normalizedTarget.fsMap, normalizedTarget.activeFilePath, parsed.components, parsed.wires)
+      : normalizedTarget.fsMap
     const nextWorkspaces = {
       ...updatedWorkspaces,
       [state.activeWorkspaceId]: normalizedCurrent,
-      [id]: normalizedTarget
+      [id]: {
+        ...normalizedTarget,
+        fsMap: targetFsMapWithSnapshot
+      }
     }
     saveWorkspacesToStorage(nextWorkspaces, id)
     set({
       workspaces: nextWorkspaces,
       activeWorkspaceId: id,
-      fsMap: normalizedTarget.fsMap,
+      fsMap: targetFsMapWithSnapshot,
       activeFilePath: normalizedTarget.activeFilePath,
       openFilePaths: normalizedTarget.openFilePaths,
       placedComponents: parsed.components,
@@ -4418,11 +4724,21 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       const state = get()
       const nextWorkspaces = { ...state.workspaces, [id]: newWs }
       const parsed = getCanvasStateForFile(newWs.activeFilePath, newWs.fsMap)
-      saveWorkspacesToStorage(nextWorkspaces, id)
+      const fsMapWithSnapshot = isCanvasEditableFilePath(newWs.activeFilePath)
+        ? writePersistedCanvasGraphState(newWs.fsMap, newWs.activeFilePath, parsed.components, parsed.wires)
+        : newWs.fsMap
+      const nextWorkspacesWithSnapshot = {
+        ...state.workspaces,
+        [id]: {
+          ...newWs,
+          fsMap: fsMapWithSnapshot
+        }
+      }
+      saveWorkspacesToStorage(nextWorkspacesWithSnapshot, id)
       set({
-        workspaces: nextWorkspaces,
+        workspaces: nextWorkspacesWithSnapshot,
         activeWorkspaceId: id,
-        fsMap: newWs.fsMap,
+        fsMap: fsMapWithSnapshot,
         activeFilePath: newWs.activeFilePath,
         openFilePaths: newWs.openFilePaths,
         placedComponents: parsed.components,
@@ -4475,13 +4791,22 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         activeFilePath: SCHEMATIC_MAIN_PATH,
         openFilePaths: [SCHEMATIC_MAIN_PATH]
       })
-      const nextWorkspaces = { ...state.workspaces, [id]: newWs }
-      const parsed = parseFileToCanvas(newWs.activeFilePath, newWs.fsMap)
+      const parsed = getCanvasStateForFile(newWs.activeFilePath, newWs.fsMap)
+      const fsMapWithSnapshot = isCanvasEditableFilePath(newWs.activeFilePath)
+        ? writePersistedCanvasGraphState(newWs.fsMap, newWs.activeFilePath, parsed.components, parsed.wires)
+        : newWs.fsMap
+      const nextWorkspaces = {
+        ...state.workspaces,
+        [id]: {
+          ...newWs,
+          fsMap: fsMapWithSnapshot
+        }
+      }
       saveWorkspacesToStorage(nextWorkspaces, id)
       set({
         workspaces: nextWorkspaces,
         activeWorkspaceId: id,
-        fsMap: newWs.fsMap,
+        fsMap: fsMapWithSnapshot,
         activeFilePath: newWs.activeFilePath,
         openFilePaths: newWs.openFilePaths,
         placedComponents: parsed.components,

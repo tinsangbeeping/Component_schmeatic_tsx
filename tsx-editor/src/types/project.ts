@@ -51,7 +51,22 @@ export interface SymbolDefinition {
   id: string // e.g., "Resistor"
   name: string // display name
   filePath: string // e.g., "symbols/Resistor.tsx"
-  ports: Array<{ name: string; x: number; y: number }> // pin definitions
+  ports: Array<{
+    name: string
+    x: number
+    y: number
+    side?: 'left' | 'right' | 'top' | 'bottom'
+    order?: number
+  }> // pin definitions
+  geometry?: {
+    width: number
+    height: number
+    origin: {
+      x: number
+      y: number
+    }
+    shapes: Array<Record<string, any>>
+  }
   drawing: {
     type: 'svg' | 'bitmap' | 'jsx'
     content: string
@@ -70,6 +85,21 @@ export type SubcircuitRegistry = {
   [name: string]: {
     filePath: string
     ports: string[]
+  }
+}
+
+export type WorkspaceSymbolRegistry = {
+  [symbolId: string]: SymbolDefinition
+}
+
+export type WorkspaceComponentRegistry = {
+  [componentType: string]: {
+    componentType: string
+    symbolRef: string
+    pins: string[]
+    footprint?: string
+    role?: 'custom-chip'
+    sourceFilePath?: string
   }
 }
 

@@ -21,6 +21,8 @@ export function createDefaultWorkspaceFsMap(name = 'My Project'): FsMap {
     'editor/meta.json': JSON.stringify(
       {
         netAnchors: {},
+        symbolRegistry: {},
+        componentRegistry: {},
         layout: {}
       },
       null,

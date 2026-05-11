@@ -62,9 +62,11 @@ export const NetLabelItem: CatalogItem = {
       schY: 0
     }
   },
+  // Valid tscircuit tag: <netlabel net="NAME" />
+  // schX/schY are editor-internal positioning; position is not part of tscircuit netlabel spec.
   emitTSX: (props) => {
-    const { net, schX, schY } = props
-    return `<netlabel net="${net}" schX={${schX}} schY={${schY}} />`
+    const { net } = props
+    return `<netlabel net="${net}" />`
   }
 }
 
@@ -87,10 +89,10 @@ export const NetItem: CatalogItem = {
       name: 'VCC'
     }
   },
-  emitTSX: (props) => {
-    const { name } = props
-    return `<net name="${name}" />`
-  }
+  // 'net' is an internal editor placeholder for named nets.
+  // tscircuit nets are implicit via trace selectors (net.NAME) and netlabel tags.
+  // This item must NOT emit any JSX into exported tscircuit files.
+  emitTSX: (_props) => ''
 }
 
 // Jumper catalog item
@@ -124,10 +126,11 @@ export const JumperItem: CatalogItem = {
       schY: 0
     }
   },
-  emitTSX: (props) => {
-    const { name, schX, schY } = props
-    return `<jumper name="${name}" schX={${schX}} schY={${schY}} />`
-  }
+  // <jumper> is not a valid tscircuit JSX tag.
+  // Physical jumpers should be represented as a two-pin passive component
+  // with traces connecting each side; the editor treats this as a connectivity
+  // aid only and does not emit it in tscircuit output.
+  emitTSX: (_props) => ''
 }
 
 // Solder Jumper catalog item

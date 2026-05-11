@@ -1,4 +1,5 @@
 import type { PlacedComponent, WireConnection } from '../types/catalog'
+import { solveJunctionGraph } from './junctionGraph'
 
 export interface NetlistEndpoint {
   componentId: string
@@ -80,22 +81,17 @@ export function extractNetlistFromGraph(
   const byId = new Map(components.map(component => [component.id, component]))
   const uf = new UnionFind()
 
-  const registerEndpoint = (componentId: string, pinName: string) => {
-    uf.add(endpointKey(componentId, pinName))
-  }
-
-  wires.forEach((wire) => {
-    registerEndpoint(wire.from.componentId, wire.from.pinName)
-    registerEndpoint(wire.to.componentId, wire.to.pinName)
-    uf.union(endpointKey(wire.from.componentId, wire.from.pinName), endpointKey(wire.to.componentId, wire.to.pinName))
-  })
+  const solved = solveJunctionGraph(components, wires)
+  solved.endpointKeys.forEach((key) => uf.add(key))
+  solved.unions.forEach(([a, b]) => uf.union(a, b))
 
   // A net/netport/netlabel represents a named electrical node; all pins on the same named node are one net.
   const firstEndpointForNetName = new Map<string, string>()
   components.forEach((component) => {
     const name = explicitNetName(component)
     if (!name) return
-    const key = endpointKey(component.id, component.catalogId === 'netlabel' ? 'port' : 'port')
+    // netlabel, netport, and net all use the same virtual 'port' pin as their anchor endpoint.
+    const key = endpointKey(component.id, 'port')
     uf.add(key)
     const existing = firstEndpointForNetName.get(name)
     if (existing) uf.union(existing, key)

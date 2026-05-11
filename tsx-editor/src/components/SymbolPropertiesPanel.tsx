@@ -36,6 +36,7 @@ export const SymbolPropertiesPanel: React.FC<SymbolPropertiesPanelProps> = ({
   const selectedPort = selected?.kind === 'port'
     ? document.ports.find(port => port.id === selected.id) || null
     : null
+  const selectedMulti = selected?.kind === 'multi' ? selected : null
 
   return (
     <div className="enhanced-properties-panel">
@@ -87,8 +88,38 @@ export const SymbolPropertiesPanel: React.FC<SymbolPropertiesPanelProps> = ({
         <button className="btn btn-primary" onClick={onExportTsx}>Export Symbol TSX</button>
 
         <div style={{ marginTop: 8, fontSize: 12, color: '#aaa' }}>
-          Selected: {selectedShape ? `${selectedShape.kind} (${selectedShape.id})` : selectedPort ? `port (${selectedPort.id})` : 'none'}
+          Selected: {selectedShape
+            ? `${selectedShape.kind} (${selectedShape.id})`
+            : selectedPort
+            ? `port (${selectedPort.id})`
+            : selectedMulti
+            ? `${selectedMulti.shapeIds.length} shape(s), ${selectedMulti.portIds.length} port(s)`
+            : 'none'}
         </div>
+
+        {selectedMulti && (
+          <div style={{ borderTop: '1px solid #3e3e3e', paddingTop: 10, display: 'grid', gap: 8 }}>
+            <div style={{ fontSize: 12, color: '#bbb' }}>
+              Group selection active. Primitive-level fields are disabled for multi-edit.
+            </div>
+            <button
+              className="btn btn-secondary"
+              style={{ width: '100%' }}
+              onClick={() => {
+                const shapeSet = new Set(selectedMulti.shapeIds)
+                const portSet = new Set(selectedMulti.portIds)
+                onDocumentChange({
+                  ...document,
+                  shapes: document.shapes.filter(shape => !shapeSet.has(shape.id)),
+                  ports: document.ports.filter(port => !portSet.has(port.id))
+                })
+                onSelectionChange(null)
+              }}
+            >
+              Delete Selected Group
+            </button>
+          </div>
+        )}
 
         {selectedShape && (
           <div style={{ borderTop: '1px solid #3e3e3e', paddingTop: 10 }}>

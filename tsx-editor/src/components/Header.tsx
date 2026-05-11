@@ -56,6 +56,7 @@ export const Header: React.FC = () => {
   const [isZipImporting, setIsZipImporting] = useState(false)
   const [isZipExporting, setIsZipExporting] = useState(false)
   const zipInputRef = useRef<HTMLInputElement | null>(null)
+  const showAdvancedToolbar = typeof window !== 'undefined' && (window as any).__SHOW_ADVANCED_TOOLBAR === true
 
   const subcircuitRegistry = useMemo(() => buildSubcircuitRegistry(fsMap), [fsMap])
   const applicablePatches = useMemo(() => getApplicablePatches(subcircuitRegistry), [subcircuitRegistry])
@@ -416,15 +417,25 @@ export const Header: React.FC = () => {
           </button>
           <button className="btn btn-primary" onClick={handleCreateSchematicPage}>New Schematic</button>
           <button className="btn btn-secondary" onClick={() => setShowImportDialog(true)}>Import TSX</button>
-          <button className="btn btn-secondary" onClick={() => setShowBatchImportDialog(true)}>Import Batch</button>
+          {showAdvancedToolbar && (
+            <button className="btn btn-secondary" onClick={() => setShowBatchImportDialog(true)}>Import Batch</button>
+          )}
           <button className="btn btn-secondary" onClick={() => zipInputRef.current?.click()} disabled={isZipImporting}>
             {isZipImporting ? 'Importing Zip...' : 'Import Zip'}
           </button>
-          <button className="btn btn-secondary" onClick={() => setShowPatchDialog(true)}>Apply Patch</button>
-          <button className="btn btn-secondary" onClick={handleCopy}>Copy TSX</button>
+          {showAdvancedToolbar && (
+            <button className="btn btn-secondary" onClick={() => setShowPatchDialog(true)}>Apply Patch</button>
+          )}
+          {showAdvancedToolbar && (
+            <button className="btn btn-secondary" onClick={handleCopy}>Copy TSX</button>
+          )}
           <button className="btn btn-secondary" onClick={handleExport}>Export Circuit</button>
-          <button className="btn btn-secondary" onClick={handleExportWorkspace} title="Download workspace as JSON">Export WS</button>
-          <button className="btn btn-secondary" onClick={() => setShowWsImportDialog(true)} title="Import a workspace JSON">Import WS</button>
+          {showAdvancedToolbar && (
+            <button className="btn btn-secondary" onClick={handleExportWorkspace} title="Download workspace as JSON">Export WS</button>
+          )}
+          {showAdvancedToolbar && (
+            <button className="btn btn-secondary" onClick={() => setShowWsImportDialog(true)} title="Import a workspace JSON">Import WS</button>
+          )}
           <button className="btn btn-primary" onClick={() => setShowExportDialog(true)}>Export as Component</button>
         </div>
       </div>

@@ -1,4 +1,4 @@
-import { SymbolDocument, SymbolPort, SymbolPortDirection, SymbolSelection, SymbolShape } from '../types/symbolDocument'
+import { SymbolDocument, SymbolPort, SymbolPortDirection, SymbolPortSide, SymbolSelection, SymbolShape } from '../types/symbolDocument'
 
 const SYMBOL_EDITOR_PREFIX = 'symbols/.editor/'
 const SYMBOL_EDITOR_SUFFIX = '.symbol.json'
@@ -65,6 +65,31 @@ const escapeStringLiteral = (value: string): string => {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
 
+const isRenderableSymbolShape = (shape: SymbolShape): boolean => {
+  if (shape.kind === 'schematicline') {
+    return shape.x1 !== shape.x2 || shape.y1 !== shape.y2
+  }
+
+  if (shape.kind === 'schematicrect') {
+    return Math.abs(shape.width) > 0 && Math.abs(shape.height) > 0
+  }
+
+  if (shape.kind === 'schematiccircle') {
+    return Math.abs(shape.radius) > 0
+  }
+
+  if (shape.kind === 'schematicarc') {
+    const delta = Math.abs(((shape.endAngleDegrees - shape.startAngleDegrees) % 360 + 360) % 360)
+    return Math.abs(shape.radius) > 0 && delta > 0
+  }
+
+  if (shape.kind === 'schematictext') {
+    return shape.text.trim().length > 0
+  }
+
+  return false
+}
+
 const symbolShapeToTsx = (shape: SymbolShape): string => {
   if (shape.kind === 'schematicline') {
     return `<schematicline x1={${toTsxNumber(shape.x1)}} y1={${toTsxNumber(shape.y1)}} x2={${toTsxNumber(shape.x2)}} y2={${toTsxNumber(shape.y2)}} />`
@@ -86,7 +111,9 @@ const symbolShapeToTsx = (shape: SymbolShape): string => {
 }
 
 const symbolPortToTsx = (port: SymbolPort): string => {
-  return `<port name="${escapeStringLiteral(port.name)}" direction="${port.direction}" schX={${toTsxNumber(port.schX)}} schY={${toTsxNumber(port.schY)}} />`
+  const sidePart = port.side ? ` side="${port.side}"` : ''
+  const orderPart = port.order !== undefined ? ` order={${port.order}}` : ''
+  return `<port name="${escapeStringLiteral(port.name)}" direction="${port.direction}"${sidePart}${orderPart} schX={${toTsxNumber(port.schX)}} schY={${toTsxNumber(port.schY)}} />`
 }
 
 const toSafeComponentIdentifier = (raw: string): string => {
@@ -98,7 +125,7 @@ const toSafeComponentIdentifier = (raw: string): string => {
 export const generateSymbolTsx = (document: SymbolDocument): string => {
   const fnName = toSafeComponentIdentifier(document.name || 'MySymbol')
   const rows = [
-    ...document.shapes.map(symbolShapeToTsx),
+    ...document.shapes.filter(isRenderableSymbolShape).map(symbolShapeToTsx),
     ...document.ports.map(symbolPortToTsx)
   ]
 
@@ -258,17 +285,42 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
   portTags.forEach(tag => {
     const name = parseStringProp(tag, 'name')
     const direction = parseStringProp(tag, 'direction')
+    const side = parseStringProp(tag, 'side')
+    const order = parseNumericProp(tag, 'order')
     const schX = parseNumericProp(tag, 'schX')
     const schY = parseNumericProp(tag, 'schY')
-    if (name.value !== null && schX.value !== null && schY.value !== null) {
-      const parsedDirection = (direction.value || 'passive') as SymbolPortDirection
+    if (name.value !== null) {
+      const rawDirection = String(direction.value || 'passive').toLowerCase()
+      const validDirections: SymbolPortDirection[] = ['input', 'output', 'inout', 'passive']
+      const directionAsSide: Record<string, SymbolPortSide> = {
+        left: 'left',
+        right: 'right',
+        top: 'top',
+        bottom: 'bottom',
+        up: 'top',
+        down: 'bottom'
+      }
+      const parsedDirection = validDirections.includes(rawDirection as SymbolPortDirection)
+        ? (rawDirection as SymbolPortDirection)
+        : 'passive'
+      const sideValue = String(side.value || '').toLowerCase()
+      const parsedSide = ((): SymbolPortSide | undefined => {
+        if (sideValue in directionAsSide) return directionAsSide[sideValue]
+        if (rawDirection in directionAsSide) return directionAsSide[rawDirection]
+        return undefined
+      })()
       document.ports.push({
         id: nextImportedId('port'),
         name: name.value,
-        direction: ['input', 'output', 'inout', 'passive'].includes(parsedDirection) ? parsedDirection : 'passive',
-        schX: schX.value,
-        schY: schY.value
+        direction: parsedDirection,
+        side: parsedSide,
+        order: order.value !== null ? order.value : undefined,
+        schX: schX.value !== null ? schX.value : 0,
+        schY: schY.value !== null ? schY.value : 0
       })
+      if (schX.value === null || schY.value === null) {
+        needsManualReview = true
+      }
     } else {
       needsManualReview = needsManualReview || name.dynamic || direction.dynamic || schX.dynamic || schY.dynamic
     }
@@ -288,6 +340,18 @@ export const updateSymbolSelectionAfterDelete = (
   deletedKind: 'shape' | 'port'
 ): SymbolSelection => {
   if (!selection) return null
+  if (selection.kind === 'multi') {
+    const shapeIds = deletedKind === 'shape'
+      ? selection.shapeIds.filter(id => id !== deletedId)
+      : selection.shapeIds
+    const portIds = deletedKind === 'port'
+      ? selection.portIds.filter(id => id !== deletedId)
+      : selection.portIds
+    if (shapeIds.length === 0 && portIds.length === 0) return null
+    if (shapeIds.length === 1 && portIds.length === 0) return { kind: 'shape', id: shapeIds[0] }
+    if (portIds.length === 1 && shapeIds.length === 0) return { kind: 'port', id: portIds[0] }
+    return { kind: 'multi', shapeIds, portIds }
+  }
   if (selection.kind === deletedKind && selection.id === deletedId) return null
   return selection
 }

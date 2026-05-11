@@ -53,6 +53,7 @@ function App() {
   const [editingWsName, setEditingWsName] = useState('')
   const [symbolToolMode, setSymbolToolMode] = useState<SymbolToolMode>('select')
   const [symbolSelection, setSymbolSelection] = useState<SymbolSelection>(null)
+  const [symbolEditorView, setSymbolEditorView] = useState<'canvas' | 'json'>('canvas')
 
   const regenerateTSX        = useEditorStore(s => s.regenerateTSX)
   const fsMap                = useEditorStore(s => s.fsMap)
@@ -133,6 +134,7 @@ function App() {
   useEffect(() => {
     setSymbolSelection(null)
     setSymbolToolMode('select')
+    setSymbolEditorView('canvas')
   }, [activeFilePath])
 
   const startRenameWorkspace = (id: string, name: string) => {
@@ -265,7 +267,7 @@ function App() {
 
     setFSMap({
       ...fsMap,
-      [filePath]: `export function ${safeName}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <symbol>\n      <line x1=\"-8\" y1=\"0\" x2=\"8\" y2=\"0\" stroke=\"black\" />\n    </symbol>\n  )\n}\n`
+      [filePath]: `export default function ${safeName}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <chip\n      name={props.name}\n      schX={props.schX}\n      schY={props.schY}\n      footprint="none"\n      symbol={\n        <symbol>\n          <schematicline x1={0} y1={20} x2={40} y2={20} />\n          <port name="P1" direction="passive" schX={0} schY={20} />\n          <port name="P2" direction="passive" schX={40} schY={20} />\n        </symbol>\n      }\n    />\n  )\n}\n`
     })
     setActiveFilePath(filePath)
   }
@@ -300,13 +302,26 @@ function App() {
   const exportActiveSymbolDocument = () => {
     if (!symbolDocument) return
     const tsxPath = getGeneratedSymbolTsxPath(symbolDocument.name)
+    const safeName = symbolDocument.name.replace(/[^a-zA-Z0-9_]/g, '_')
+    const existingIndex = fsMap['symbols/index.ts'] || ''
+    const exportLine = `export { default as ${safeName} } from "./${safeName}"`
+    const indexLines = existingIndex
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(line => !line.startsWith(`export { default as ${safeName} } from`))
+      .filter(line => line !== '// Symbol definitions exported here')
+    const nextIndex = [...indexLines, exportLine]
+      .sort((a, b) => a.localeCompare(b))
+      .join('\n')
     const nextMap = {
       ...fsMap,
-      [tsxPath]: generateSymbolTsx(symbolDocument)
+      [tsxPath]: generateSymbolTsx(symbolDocument),
+      'symbols/index.ts': nextIndex ? `${nextIndex}\n` : ''
     }
     setFSMap(nextMap)
     setActiveFilePath(tsxPath)
-    alert(`Exported symbol TSX: ${tsxPath}`)
+    alert(`Exported symbol TSX and registered component: ${tsxPath}`)
   }
 
   const importSymbolComponentToEditor = (symbolPath: string) => {
@@ -674,15 +689,37 @@ function App() {
         {/* ── Center: editor tabs + canvas ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <EditorTabs />
+          {canRenderSymbolEditor && (
+            <div style={{ display: 'flex', gap: 6, padding: '6px 10px', borderBottom: '1px solid #2f2f2f', background: '#202020' }}>
+              <button
+                className={symbolEditorView === 'canvas' ? 'btn btn-primary' : 'btn btn-secondary'}
+                style={{ fontSize: 11, padding: '3px 8px' }}
+                onClick={() => setSymbolEditorView('canvas')}
+              >
+                Symbol Canvas
+              </button>
+              <button
+                className={symbolEditorView === 'json' ? 'btn btn-primary' : 'btn btn-secondary'}
+                style={{ fontSize: 11, padding: '3px 8px' }}
+                onClick={() => setSymbolEditorView('json')}
+              >
+                Symbol JSON
+              </button>
+            </div>
+          )}
           {canRenderSymbolEditor && symbolDocument ? (
-            <SymbolCanvas
-              document={symbolDocument}
-              toolMode={symbolToolMode}
-              selected={symbolSelection}
-              onToolModeChange={setSymbolToolMode}
-              onSelectionChange={setSymbolSelection}
-              onDocumentChange={saveSymbolDocument}
-            />
+            symbolEditorView === 'json' ? (
+              <CodeView />
+            ) : (
+              <SymbolCanvas
+                document={symbolDocument}
+                toolMode={symbolToolMode}
+                selected={symbolSelection}
+                onToolModeChange={setSymbolToolMode}
+                onSelectionChange={setSymbolSelection}
+                onDocumentChange={saveSymbolDocument}
+              />
+            )
           ) : canRenderCanvas ? (
             <Canvas />
           ) : (
@@ -692,7 +729,7 @@ function App() {
 
         {/* ── Right Panel ── */}
         <div style={{ width: 300, background: '#252526', borderLeft: '1px solid #3e3e3e', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-          {canRenderSymbolEditor && symbolDocument ? (
+          {canRenderSymbolEditor && symbolDocument && symbolEditorView === 'canvas' ? (
             <SymbolPropertiesPanel
               document={symbolDocument}
               selected={symbolSelection}
@@ -700,6 +737,10 @@ function App() {
               onDocumentChange={saveSymbolDocument}
               onExportTsx={exportActiveSymbolDocument}
             />
+          ) : canRenderSymbolEditor && symbolEditorView === 'json' ? (
+            <div className="enhanced-properties-panel" style={{ padding: 12, color: '#bbb', fontSize: 12 }}>
+              JSON view active. Edit the SymbolDocument source directly in the center panel.
+            </div>
           ) : (
             <EnhancedPropertiesPanel
               selectedComponent={selectedComponent}
