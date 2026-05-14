@@ -9,6 +9,7 @@ import { EnhancedPropertiesPanel } from './components/EnhancedPropertiesPanel'
 import { SymbolCanvas } from './components/SymbolCanvas'
 import { SymbolPropertiesPanel } from './components/SymbolPropertiesPanel'
 import { CodeView } from './components/CodeView'
+import { BlockDiagramEditorPage } from './components/BlockDiagramEditorPage'
 import { useEditorStore } from './store/editorStore'
 import {
   createSymbolDocument,
@@ -33,7 +34,6 @@ import { getApplicablePatches } from './lib/patches'
 import './App.css'
 
 const MAIN_SCHEMATIC_PATH = 'schematics/main.tsx'
-const BLOCK_DIAGRAM_FILES_PATH = 'src/components/BlockDiagramEditorPage.tsx'
 
 type LeftTab = 'workspaces' | 'files' | 'schematics' | 'components' | 'symbols' | 'subcircuits' | 'patches'
 
@@ -55,6 +55,7 @@ function App() {
   const [symbolToolMode, setSymbolToolMode] = useState<SymbolToolMode>('select')
   const [symbolSelection, setSymbolSelection] = useState<SymbolSelection>(null)
   const [symbolEditorView, setSymbolEditorView] = useState<'canvas' | 'json'>('canvas')
+  const [canvasViewMode, setCanvasViewMode] = useState<'schematic' | 'block'>('schematic')
 
   const regenerateTSX        = useEditorStore(s => s.regenerateTSX)
   const fsMap                = useEditorStore(s => s.fsMap)
@@ -136,7 +137,14 @@ function App() {
     setSymbolSelection(null)
     setSymbolToolMode('select')
     setSymbolEditorView('canvas')
+    setCanvasViewMode('schematic')
   }, [activeFilePath])
+
+  useEffect(() => {
+    if (!canRenderCanvas && canvasViewMode !== 'schematic') {
+      setCanvasViewMode('schematic')
+    }
+  }, [canRenderCanvas, canvasViewMode])
 
   const startRenameWorkspace = (id: string, name: string) => {
     setEditingWsId(id)
@@ -691,8 +699,21 @@ function App() {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <EditorTabs />
           {canRenderCanvas && (
-            <div style={{ padding: '4px 10px', borderBottom: '1px solid #2f2f2f', background: '#202020', color: '#8f8f8f', fontSize: 11 }}>
-              Block diagram modules available at {BLOCK_DIAGRAM_FILES_PATH}
+            <div style={{ display: 'flex', gap: 6, padding: '6px 10px', borderBottom: '1px solid #2f2f2f', background: '#202020' }}>
+              <button
+                className={canvasViewMode === 'schematic' ? 'btn btn-primary' : 'btn btn-secondary'}
+                style={{ fontSize: 11, padding: '3px 8px' }}
+                onClick={() => setCanvasViewMode('schematic')}
+              >
+                Schematic
+              </button>
+              <button
+                className={canvasViewMode === 'block' ? 'btn btn-primary' : 'btn btn-secondary'}
+                style={{ fontSize: 11, padding: '3px 8px' }}
+                onClick={() => setCanvasViewMode('block')}
+              >
+                Block
+              </button>
             </div>
           )}
           {canRenderSymbolEditor && (
@@ -727,7 +748,7 @@ function App() {
               />
             )
           ) : canRenderCanvas ? (
-            <Canvas />
+            canvasViewMode === 'block' ? <BlockDiagramEditorPage /> : <Canvas />
           ) : (
             <CodeView />
           )}
@@ -735,7 +756,11 @@ function App() {
 
         {/* ── Right Panel ── */}
         <div style={{ width: 300, background: '#252526', borderLeft: '1px solid #3e3e3e', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-          {canRenderSymbolEditor && symbolDocument && symbolEditorView === 'canvas' ? (
+          {canRenderCanvas && canvasViewMode === 'block' ? (
+            <div className="enhanced-properties-panel" style={{ padding: 12, color: '#bbb', fontSize: 12 }}>
+              Block Diagram view active. Switch back to Schematic tab to inspect and edit component properties.
+            </div>
+          ) : canRenderSymbolEditor && symbolDocument && symbolEditorView === 'canvas' ? (
             <SymbolPropertiesPanel
               document={symbolDocument}
               selected={symbolSelection}
