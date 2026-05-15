@@ -30,13 +30,13 @@ const shapePoints = (shape: SymbolShape): SymbolPoint[] => {
   }
 
   if (shape.kind === 'schematicrect') {
-    const x = toFinite((shape as any).x ?? (shape as any).schX)
-    const y = toFinite((shape as any).y ?? (shape as any).schY)
-    const halfW = Math.abs(toFinite(shape.width)) / 2
-    const halfH = Math.abs(toFinite(shape.height)) / 2
+    const width = Math.abs(toFinite(shape.width))
+    const height = Math.abs(toFinite(shape.height))
+    const centerX = toFinite((shape as any).cx ?? (shape as any).schX)
+    const centerY = toFinite((shape as any).cy ?? (shape as any).schY)
     return [
-      { x, y },
-      { x: x + halfW * 2, y: y + halfH * 2 }
+      { x: centerX - width / 2, y: centerY - height / 2 },
+      { x: centerX + width / 2, y: centerY + height / 2 }
     ]
   }
 
@@ -109,11 +109,27 @@ export const getSymbolBoundsFromGeometry = (
 }
 
 export const getSymbolBounds = (symbolDefinition: SymbolDefinition | undefined): SymbolBounds => {
-  const fallbackWidth = Number(symbolDefinition?.geometry?.width || 120)
-  const fallbackHeight = Number(symbolDefinition?.geometry?.height || 80)
+  const fallbackWidth = Number(symbolDefinition?.width || symbolDefinition?.geometry?.width || 120)
+  const fallbackHeight = Number(symbolDefinition?.height || symbolDefinition?.geometry?.height || 80)
 
   if (!symbolDefinition) {
     return getSymbolBoundsFromGeometry([], [], fallbackWidth, fallbackHeight)
+  }
+
+  const explicitBounds = symbolDefinition.bounds || symbolDefinition.geometry?.bounds
+  if (explicitBounds) {
+    const minX = toFinite(explicitBounds.minX)
+    const minY = toFinite(explicitBounds.minY)
+    const maxX = toFinite(explicitBounds.maxX, minX + fallbackWidth)
+    const maxY = toFinite(explicitBounds.maxY, minY + fallbackHeight)
+    return {
+      minX,
+      minY,
+      maxX,
+      maxY,
+      width: Math.max(20, maxX - minX),
+      height: Math.max(20, maxY - minY)
+    }
   }
 
   const shapes = Array.isArray(symbolDefinition.geometry?.shapes)

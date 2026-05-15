@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { SymbolDocument, SymbolSelection, SymbolShape, SymbolToolMode } from '../types/symbolDocument'
+import { getArcEndpoint } from '../utils/arcAngles'
 
 interface Point {
   x: number
@@ -26,22 +27,22 @@ const nextShapeId = (() => {
 })()
 
 const toArcPath = (shape: Extract<SymbolShape, { kind: 'schematicarc' }>): string => {
-  const startRadians = (shape.startAngle * Math.PI) / 180
-  const endRadians = (shape.endAngle * Math.PI) / 180
-  const sx = shape.cx + shape.radius * Math.cos(startRadians)
-  const sy = shape.cy + shape.radius * Math.sin(startRadians)
-  const ex = shape.cx + shape.radius * Math.cos(endRadians)
-  const ey = shape.cy + shape.radius * Math.sin(endRadians)
-  const delta = ((shape.endAngle - shape.startAngle) % 360 + 360) % 360
+  const startPoint = getArcEndpoint(shape.cx, shape.cy, shape.radius, shape.startAngle)
+  const endPoint = getArcEndpoint(shape.cx, shape.cy, shape.radius, shape.endAngle)
+  const direction = shape.direction ?? 'clockwise'
+  const delta = direction === 'counterclockwise'
+    ? ((shape.startAngle - shape.endAngle) % 360 + 360) % 360
+    : ((shape.endAngle - shape.startAngle) % 360 + 360) % 360
   const largeArc = delta > 180 ? 1 : 0
-  return `M ${sx} ${sy} A ${shape.radius} ${shape.radius} 0 ${largeArc} 1 ${ex} ${ey}`
+  const sweepFlag = direction === 'counterclockwise' ? 0 : 1
+  return `M ${startPoint.x} ${startPoint.y} A ${shape.radius} ${shape.radius} 0 ${largeArc} ${sweepFlag} ${endPoint.x} ${endPoint.y}`
 }
 
 const getRectBounds = (shape: Extract<SymbolShape, { kind: 'schematicrect' }>) => ({
-  minX: shape.x,
-  maxX: shape.x + shape.width,
-  minY: shape.y,
-  maxY: shape.y + shape.height
+  minX: shape.cx - shape.width / 2,
+  maxX: shape.cx + shape.width / 2,
+  minY: shape.cy - shape.height / 2,
+  maxY: shape.cy + shape.height / 2
 })
 
 const getCircleBounds = (shape: Extract<SymbolShape, { kind: 'schematiccircle' }>) => ({
@@ -369,8 +370,8 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
       nextShape = {
         id: nextShapeId('rect'),
         kind: 'schematicrect',
-        x: minX,
-        y: minY,
+        cx: (minX + maxX) / 2,
+        cy: (minY + maxY) / 2,
         width: Math.abs(draftEnd.x - draftStart.x),
         height: Math.abs(draftEnd.y - draftStart.y)
       }
@@ -390,7 +391,8 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
         cy: draftStart.y,
         radius: Math.max(1, Math.round(Math.hypot(draftEnd.x - draftStart.x, draftEnd.y - draftStart.y))),
         startAngle: 0,
-        endAngle: 180
+        endAngle: 180,
+        direction: 'clockwise'
       }
     }
 
@@ -436,8 +438,8 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
       return {
         id: 'draft',
         kind: 'schematicrect',
-        x: minX,
-        y: minY,
+        cx: (minX + maxX) / 2,
+        cy: (minY + maxY) / 2,
         width: Math.abs(draftEnd.x - draftStart.x),
         height: Math.abs(draftEnd.y - draftStart.y)
       }
@@ -461,7 +463,8 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
         cy: draftStart.y,
         radius: Math.max(1, Math.round(Math.hypot(draftEnd.x - draftStart.x, draftEnd.y - draftStart.y))),
         startAngle: 0,
-        endAngle: 180
+        endAngle: 180,
+        direction: 'clockwise'
       }
     }
 
@@ -520,8 +523,8 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
       return (
         <rect
           key={shape.id}
-          x={shape.x}
-          y={shape.y}
+          x={shape.cx - shape.width / 2}
+          y={shape.cy - shape.height / 2}
           width={shape.width}
           height={shape.height}
           {...common}

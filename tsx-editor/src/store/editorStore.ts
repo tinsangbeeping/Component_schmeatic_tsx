@@ -1719,19 +1719,24 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         || importedSymbolComponentDefinitionAny?.geometry?.shapes?.map((shape: any) => ({ ...shape }))
         || []
       props.symbolWidth = Number(
-        resolvedSymbolDefinition?.geometry?.width
+        resolvedSymbolDefinition?.width
+        || resolvedSymbolDefinition?.geometry?.width
         || symbolComponentDefinitionAny?.geometry?.width
         || importedSymbolComponentDefinitionAny?.geometry?.width
         || props.symbolWidth
         || 120
       )
       props.symbolHeight = Number(
-        resolvedSymbolDefinition?.geometry?.height
+        resolvedSymbolDefinition?.height
+        || resolvedSymbolDefinition?.geometry?.height
         || symbolComponentDefinitionAny?.geometry?.height
         || importedSymbolComponentDefinitionAny?.geometry?.height
         || props.symbolHeight
         || 80
       )
+      props.symbolBounds = resolvedSymbolDefinition?.bounds
+        || resolvedSymbolDefinition?.geometry?.bounds
+        || props.symbolBounds
       props.symbolOriginX = Number(
         resolvedSymbolDefinition?.geometry?.origin?.x
         || symbolComponentDefinitionAny?.geometry?.origin?.x

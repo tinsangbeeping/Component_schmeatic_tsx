@@ -2,6 +2,7 @@ import ELK from 'elkjs'
 import { PlacedComponent } from '../types/catalog'
 import { getPinConfig } from '../types/schematic'
 import { filterLayoutCandidates, filterElkEdges } from './semanticLayout'
+import { buildCustomChipLayout } from './customChipLayout'
 
 const elk = new ELK()
 const GRID_SIZE = 20
@@ -45,50 +46,17 @@ const toElkPortSide = (side?: string): ElkPortSide => {
 }
 
 const getCustomChipLayoutPins = (component: PlacedComponent): Array<{ name: string; side: ElkPortSide }> => {
-  const pinCount = Math.max(2, Number(component.props.pinCount || 8))
-  const leftCount = Math.max(0, Number(component.props.leftPins ?? Math.ceil(pinCount / 2)))
-  const rightCount = Math.max(0, Number(component.props.rightPins ?? Math.floor(pinCount / 2)))
-  const topCount = Math.max(0, Number(component.props.topPins ?? 0))
-  const bottomCount = Math.max(0, Number(component.props.bottomPins ?? 0))
-
-  const namedMap = new Map<string, string>()
-  const rawNames = String(component.props.pinNames || '').trim()
-  if (rawNames.includes('=')) {
-    rawNames
-      .split(',')
-      .map(entry => entry.trim())
-      .filter(Boolean)
-      .forEach((entry) => {
-        const [slot, ...rest] = entry.split('=')
-        const slotKey = slot.trim().toUpperCase()
-        const pinLabel = rest.join('=').trim()
-        if (slotKey && pinLabel) {
-          namedMap.set(slotKey, pinLabel)
-        }
-      })
-  }
-
-  const legacyNames = !rawNames.includes('=')
-    ? rawNames.split(',').map(value => value.trim()).filter(Boolean)
-    : []
-  let legacyCursor = 0
-
-  const resolveName = (slotKey: string, fallback: string) => {
-    if (namedMap.has(slotKey)) return namedMap.get(slotKey) as string
-    if (legacyCursor < legacyNames.length) {
-      const next = legacyNames[legacyCursor]
-      legacyCursor += 1
-      return next
-    }
-    return fallback
-  }
-
-  const pins: Array<{ name: string; side: ElkPortSide }> = []
-  for (let i = 0; i < leftCount; i += 1) pins.push({ name: resolveName(`L${i + 1}`, `pin${i + 1}`), side: 'WEST' })
-  for (let i = 0; i < rightCount; i += 1) pins.push({ name: resolveName(`R${i + 1}`, `pin${leftCount + i + 1}`), side: 'EAST' })
-  for (let i = 0; i < topCount; i += 1) pins.push({ name: resolveName(`U${i + 1}`, `U${i + 1}`), side: 'NORTH' })
-  for (let i = 0; i < bottomCount; i += 1) pins.push({ name: resolveName(`D${i + 1}`, `D${i + 1}`), side: 'SOUTH' })
-  return pins
+  const layout = buildCustomChipLayout(component.props, component.name)
+  return layout.pins.map((pin) => ({
+    name: pin.name,
+    side: pin.side === 'left'
+      ? 'WEST'
+      : pin.side === 'right'
+      ? 'EAST'
+      : pin.side === 'top'
+      ? 'NORTH'
+      : 'SOUTH'
+  }))
 }
 
 const dedupeRoutePoints = (points: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> => {
@@ -128,6 +96,22 @@ const extractRoutePoints = (edge: any): Array<{ x: number; y: number }> => {
 }
 
 const getNodeSize = (component: PlacedComponent): { width: number; height: number } => {
+  if (component.catalogId === 'symbol-instance') {
+    const rawBounds = component.props.symbolBounds as { minX?: unknown; minY?: unknown; maxX?: unknown; maxY?: unknown } | undefined
+    const boundsWidth = Number(rawBounds?.maxX) - Number(rawBounds?.minX)
+    const boundsHeight = Number(rawBounds?.maxY) - Number(rawBounds?.minY)
+    const width = Number.isFinite(boundsWidth) && boundsWidth > 0
+      ? boundsWidth
+      : Number(component.props.symbolWidth || 120)
+    const height = Number.isFinite(boundsHeight) && boundsHeight > 0
+      ? boundsHeight
+      : Number(component.props.symbolHeight || 80)
+    return {
+      width: Math.max(20, Number.isFinite(width) ? width : 120),
+      height: Math.max(20, Number.isFinite(height) ? height : 80)
+    }
+  }
+
   if (component.catalogId === 'subcircuit-instance') {
     const portCount = ((component.props.ports as string[] | undefined) || []).length
     const rows = Math.max(1, Math.ceil(portCount / 2))
@@ -141,16 +125,10 @@ const getNodeSize = (component: PlacedComponent): { width: number; height: numbe
   }
 
   if (component.catalogId === 'customchip') {
-    const pinCount = Math.max(2, Number(component.props.pinCount || 8))
-    const leftPins = Math.max(0, Number(component.props.leftPins ?? Math.ceil(pinCount / 2)))
-    const rightPins = Math.max(0, Number(component.props.rightPins ?? Math.floor(pinCount / 2)))
-    const topPins = Math.max(0, Number(component.props.topPins ?? 0))
-    const bottomPins = Math.max(0, Number(component.props.bottomPins ?? 0))
-    const sideRows = Math.max(leftPins, rightPins)
-    const topBottomCols = Math.max(topPins, bottomPins)
+    const layout = buildCustomChipLayout(component.props, component.name)
     return {
-      width: Math.max(100, 28 + topBottomCols * 20),
-      height: Math.max(80, 24 + sideRows * 20)
+      width: layout.width,
+      height: layout.height
     }
   }
 
@@ -171,6 +149,31 @@ const getLayoutPins = (component: PlacedComponent): Array<{ name: string; side: 
   }
 
   if (component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance' || component.catalogId === 'symbol-instance') {
+    const symbolicPorts = Array.isArray(component.props.symbolPorts)
+      ? (component.props.symbolPorts as Array<{ name?: string; side?: string; order?: number }>)
+      : []
+
+    if (component.catalogId === 'symbol-instance' && symbolicPorts.length > 0) {
+      return symbolicPorts
+        .filter((port) => String(port.name || '').trim().length > 0)
+        .sort((a, b) => {
+          const sideRank = (side?: string) => {
+            if (side === 'left') return 0
+            if (side === 'right') return 1
+            if (side === 'top') return 2
+            if (side === 'bottom') return 3
+            return 4
+          }
+          const sd = sideRank(a.side) - sideRank(b.side)
+          if (sd !== 0) return sd
+          const ao = Number(a.order)
+          const bo = Number(b.order)
+          if (Number.isFinite(ao) && Number.isFinite(bo) && ao !== bo) return ao - bo
+          return String(a.name || '').localeCompare(String(b.name || ''))
+        })
+        .map((port) => ({ name: String(port.name), side: toElkPortSide(port.side) }))
+    }
+
     const ports = ((component.props.ports as string[] | undefined) || []).map(String)
     if (ports.length === 0) return [{ name: 'IO', side: 'WEST' }]
 

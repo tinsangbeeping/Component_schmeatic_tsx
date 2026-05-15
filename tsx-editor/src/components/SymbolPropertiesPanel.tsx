@@ -134,8 +134,8 @@ export const SymbolPropertiesPanel: React.FC<SymbolPropertiesPanelProps> = ({
 
             {selectedShape.kind === 'schematicrect' && (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <input type="number" value={selectedShape.x} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, x: toNumber(e.target.value, selectedShape.x) } as SymbolShape)))} />
-                <input type="number" value={selectedShape.y} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, y: toNumber(e.target.value, selectedShape.y) } as SymbolShape)))} />
+                <input type="number" value={selectedShape.cx} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, cx: toNumber(e.target.value, selectedShape.cx) } as SymbolShape)))} />
+                <input type="number" value={selectedShape.cy} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, cy: toNumber(e.target.value, selectedShape.cy) } as SymbolShape)))} />
                 <input type="number" value={selectedShape.width} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, width: Math.max(1, toNumber(e.target.value, selectedShape.width)) })))} />
                 <input type="number" value={selectedShape.height} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, height: Math.max(1, toNumber(e.target.value, selectedShape.height)) })))} />
               </div>
@@ -156,6 +156,10 @@ export const SymbolPropertiesPanel: React.FC<SymbolPropertiesPanelProps> = ({
                 <input type="number" value={selectedShape.radius} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, radius: Math.max(1, toNumber(e.target.value, selectedShape.radius)) })))} />
                 <input type="number" value={selectedShape.startAngle} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, startAngle: toNumber(e.target.value, selectedShape.startAngle) } as SymbolShape)))} />
                 <input type="number" value={selectedShape.endAngle} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, endAngle: toNumber(e.target.value, selectedShape.endAngle) } as SymbolShape)))} />
+                <select value={selectedShape.direction || 'clockwise'} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, direction: e.target.value as 'clockwise' | 'counterclockwise' } as SymbolShape)))}>
+                  <option value="clockwise">clockwise</option>
+                  <option value="counterclockwise">counterclockwise</option>
+                </select>
               </div>
             )}
 

@@ -51,6 +51,15 @@ export interface SymbolDefinition {
   id: string // e.g., "Resistor"
   name: string // display name
   filePath: string // e.g., "symbols/Resistor.tsx"
+  width: number
+  height: number
+  bounds: {
+    minX: number
+    minY: number
+    maxX: number
+    maxY: number
+  }
+  scalePolicy?: 'fit-local-bounds' | 'fixed'
   ports: Array<{
     name: string
     x: number
@@ -62,6 +71,12 @@ export interface SymbolDefinition {
   geometry?: {
     width: number
     height: number
+    bounds?: {
+      minX: number
+      minY: number
+      maxX: number
+      maxY: number
+    }
     origin: {
       x: number
       y: number

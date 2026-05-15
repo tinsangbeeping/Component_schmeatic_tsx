@@ -671,13 +671,17 @@ const shapeBounds = (shape: Record<string, any>): { minX: number; minY: number; 
   if (shape.kind === 'schematicrect') {
     const width = Math.abs(toFiniteNumber(shape.width))
     const height = Math.abs(toFiniteNumber(shape.height))
-    const x = toFiniteNumber(shape.x ?? shape.schX ?? (shape.center ? shape.center.x - width / 2 : 0))
-    const y = toFiniteNumber(shape.y ?? shape.schY ?? (shape.center ? shape.center.y - height / 2 : 0))
+    const cx = Number.isFinite(Number(shape.x))
+      ? toFiniteNumber(shape.x) + width / 2
+      : toFiniteNumber(shape.cx ?? shape.schX ?? shape.center?.x)
+    const cy = Number.isFinite(Number(shape.y))
+      ? toFiniteNumber(shape.y) + height / 2
+      : toFiniteNumber(shape.cy ?? shape.schY ?? shape.center?.y)
     return {
-      minX: x,
-      minY: y,
-      maxX: x + width,
-      maxY: y + height
+      minX: cx - width / 2,
+      minY: cy - height / 2,
+      maxX: cx + width / 2,
+      maxY: cy + height / 2
     }
   }
 
@@ -746,6 +750,7 @@ const normalizeSymbolGeometry = (
 ): {
   width: number
   height: number
+  bounds: { minX: number; minY: number; maxX: number; maxY: number }
   origin: { x: number; y: number }
   shapes: Array<Record<string, any>>
   ports: Array<{ name: string; x: number; y: number; side?: 'left' | 'right' | 'top' | 'bottom'; order?: number }>
@@ -781,8 +786,12 @@ const normalizeSymbolGeometry = (
       const height = Math.abs(toFiniteNumber(shape.height))
       return {
         ...shape,
-        x: toFiniteNumber(shape.x ?? shape.schX ?? (shape.center ? shape.center.x - width / 2 : 0)),
-        y: toFiniteNumber(shape.y ?? shape.schY ?? (shape.center ? shape.center.y - height / 2 : 0)),
+        cx: Number.isFinite(Number(shape.x))
+          ? toFiniteNumber(shape.x) + width / 2
+          : toFiniteNumber(shape.cx ?? shape.schX ?? shape.center?.x),
+        cy: Number.isFinite(Number(shape.y))
+          ? toFiniteNumber(shape.y) + height / 2
+          : toFiniteNumber(shape.cy ?? shape.schY ?? shape.center?.y),
         width,
         height
       }
@@ -822,6 +831,12 @@ const normalizeSymbolGeometry = (
   return {
     width: Math.max(20, maxX - minX),
     height: Math.max(20, maxY - minY),
+    bounds: {
+      minX,
+      minY,
+      maxX,
+      maxY
+    },
     origin: { x: minX, y: minY },
     shapes: normalizedShapes,
     ports: normalizedPorts
@@ -858,10 +873,15 @@ export const extractAllSymbols = (fsMap: FSMap): SymbolDefinition[] => {
       id: getPathBaseName(path),
       name,
       filePath: path,
+      width: normalized.width,
+      height: normalized.height,
+      bounds: normalized.bounds,
+      scalePolicy: 'fit-local-bounds',
       ports: normalized.ports,
       geometry: {
         width: normalized.width,
         height: normalized.height,
+        bounds: normalized.bounds,
         origin: normalized.origin,
         shapes: normalized.shapes
       },

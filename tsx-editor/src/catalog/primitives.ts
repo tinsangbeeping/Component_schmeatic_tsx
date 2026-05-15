@@ -82,7 +82,9 @@ export const SchematicRectItem: CatalogItem = {
   },
   emitTSX: (props) => {
     const { x, y, width, height } = props
-    return `<schematicrect x={${x}} y={${y}} width={${width}} height={${height}} />`
+    const schX = Number(x) + Number(width) / 2
+    const schY = Number(y) + Number(height) / 2
+    return `<schematicrect schX={${schX}} schY={${schY}} width={${width}} height={${height}} />`
   }
 }
 
@@ -119,7 +121,7 @@ export const SchematicCircleItem: CatalogItem = {
   },
   emitTSX: (props) => {
     const { cx, cy, radius } = props
-    return `<schematiccircle cx={${cx}} cy={${cy}} radius={${radius}} />`
+    return `<schematiccircle center={{x: ${cx}, y: ${cy}}} radius={${radius}} />`
   }
 }
 
@@ -168,7 +170,7 @@ export const SchematicArcItem: CatalogItem = {
   },
   emitTSX: (props) => {
     const { cx, cy, radius, startAngle, endAngle } = props
-    return `<schematicarc cx={${cx}} cy={${cy}} radius={${radius}} startAngle={${startAngle}} endAngle={${endAngle}} />`
+    return `<schematicarc center={{x: ${cx}, y: ${cy}}} radius={${radius}} startAngleDegrees={${startAngle}} endAngleDegrees={${endAngle}} direction="clockwise" />`
   }
 }
 
@@ -230,6 +232,6 @@ export const SchematicTextItem: CatalogItem = {
   },
   emitTSX: (props) => {
     const { text, x, y } = props
-    return `<schematictext text="${text}" x={${x}} y={${y}} />`
+    return `<schematictext text="${text}" schX={${x}} schY={${y}} />`
   }
 }

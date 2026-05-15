@@ -17,8 +17,8 @@ export interface SchematicLineShape extends SymbolShapeBase {
 
 export interface SchematicRectShape extends SymbolShapeBase {
   kind: 'schematicrect'
-  x: number
-  y: number
+  cx: number
+  cy: number
   width: number
   height: number
 }
@@ -37,6 +37,7 @@ export interface SchematicArcShape extends SymbolShapeBase {
   radius: number
   startAngle: number
   endAngle: number
+  direction?: 'clockwise' | 'counterclockwise'
 }
 
 export interface SchematicTextShape extends SymbolShapeBase {

@@ -7,6 +7,8 @@ import { getPinConfig } from '../types/schematic'
 import { SymbolDefinition } from '../types/project'
 import { buildWorkspaceComponentRegistry, buildWorkspaceSymbolRegistry, extractAllSubcircuits, extractAllSymbols } from '../utils/projectManager'
 import { getSymbolBounds, getSymbolBoundsFromGeometry } from '../utils/symbolBounds'
+import { buildCustomChipLayout } from '../utils/customChipLayout'
+import { getArcEndpoint } from '../utils/arcAngles'
 
 const normalizeSymbolRef = (value: string): string => {
   const trimmed = String(value || '').trim().replace(/\\/g, '/')
@@ -62,18 +64,19 @@ export const Canvas: React.FC = () => {
     }
 
     if (shape.kind === 'schematicrect') {
-      const center = applyLocalTransformPoint(
-        Number(shape.x ?? shape.schX ?? 0),
-        Number(shape.y ?? shape.schY ?? 0),
-        localTransform
-      )
       const width = Math.max(1, Number(shape.width || 1))
       const height = Math.max(1, Number(shape.height || 1))
+      const hasTopLeft = Number.isFinite(Number(shape.x)) && Number.isFinite(Number(shape.y))
+      const topLeft = applyLocalTransformPoint(
+        Number(shape.cx ?? shape.schX ?? (hasTopLeft ? Number(shape.x) + width / 2 : 0)) - width / 2,
+        Number(shape.cy ?? shape.schY ?? (hasTopLeft ? Number(shape.y) + height / 2 : 0)) - height / 2,
+        localTransform
+      )
       return (
         <rect
           key={key}
-          x={center.x - width / 2}
-          y={center.y - height / 2}
+          x={topLeft.x}
+          y={topLeft.y}
           width={width}
           height={height}
           stroke={strokeColor}
@@ -101,15 +104,17 @@ export const Canvas: React.FC = () => {
     if (shape.kind === 'schematicarc') {
       const center = applyLocalTransformPoint(Number(shape.cx ?? shape.center?.x ?? 0), Number(shape.cy ?? shape.center?.y ?? 0), localTransform)
       const radius = Math.max(1, Number(shape.radius || 1))
-      const start = Number((shape.startAngle ?? shape.startAngleDegrees) || 0) * Math.PI / 180
-      const end = Number((shape.endAngle ?? shape.endAngleDegrees) || 180) * Math.PI / 180
-      const x1 = center.x + radius * Math.cos(start)
-      const y1 = center.y + radius * Math.sin(start)
-      const x2 = center.x + radius * Math.cos(end)
-      const y2 = center.y + radius * Math.sin(end)
-      const delta = ((Number((shape.endAngle ?? shape.endAngleDegrees) || 180) - Number((shape.startAngle ?? shape.startAngleDegrees) || 0)) % 360 + 360) % 360
+      const startAngle = Number((shape.startAngle ?? shape.startAngleDegrees) || 0)
+      const endAngle = Number((shape.endAngle ?? shape.endAngleDegrees) || 180)
+      const direction = String(shape.direction || 'clockwise').toLowerCase() === 'counterclockwise' ? 'counterclockwise' : 'clockwise'
+      const startPoint = getArcEndpoint(center.x, center.y, radius, startAngle)
+      const endPoint = getArcEndpoint(center.x, center.y, radius, endAngle)
+      const delta = direction === 'counterclockwise'
+        ? ((startAngle - endAngle) % 360 + 360) % 360
+        : ((endAngle - startAngle) % 360 + 360) % 360
       const largeArc = delta > 180 ? 1 : 0
-      const d = `M ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2}`
+      const sweepFlag = direction === 'counterclockwise' ? 0 : 1
+      const d = `M ${startPoint.x} ${startPoint.y} A ${radius} ${radius} 0 ${largeArc} ${sweepFlag} ${endPoint.x} ${endPoint.y}`
       return <path key={key} d={d} stroke={strokeColor} strokeWidth={2} fill="none" />
     }
 
@@ -364,16 +369,10 @@ export const Canvas: React.FC = () => {
       return { width: 150, height: Math.max(52, 34 + rows * 18) }
     }
     if (component.catalogId === 'customchip') {
-      const legacyCount = Math.max(2, Number(component.props.pinCount || 8))
-      const leftPins = Math.max(0, Number(component.props.leftPins ?? Math.ceil(legacyCount / 2)))
-      const rightPins = Math.max(0, Number(component.props.rightPins ?? Math.floor(legacyCount / 2)))
-      const topPins = Math.max(0, Number(component.props.topPins ?? 0))
-      const bottomPins = Math.max(0, Number(component.props.bottomPins ?? 0))
-      const sideRows = Math.max(leftPins, rightPins)
-      const topBottomCols = Math.max(topPins, bottomPins)
+      const layout = buildCustomChipLayout(component.props, component.name)
       return {
-        width: Math.max(100, 28 + topBottomCols * 20),
-        height: Math.max(80, 24 + sideRows * 20)
+        width: layout.width,
+        height: layout.height
       }
     }
     const schematic = getPinConfig(component.catalogId)
@@ -519,84 +518,12 @@ export const Canvas: React.FC = () => {
     }
 
     if (component.catalogId === 'customchip') {
-      const legacyCount = Math.max(2, Number(component.props.pinCount || 8))
-      const leftCount = Math.max(0, Number(component.props.leftPins ?? Math.ceil(legacyCount / 2)))
-      const rightCount = Math.max(0, Number(component.props.rightPins ?? Math.floor(legacyCount / 2)))
-      const topCount = Math.max(0, Number(component.props.topPins ?? 0))
-      const bottomCount = Math.max(0, Number(component.props.bottomPins ?? 0))
-
-      const bodyWidth = Math.max(100, 28 + Math.max(topCount, bottomCount) * 20)
-      const bodyHeight = Math.max(80, 24 + Math.max(leftCount, rightCount) * 20)
-
-      const namedMap = new Map<string, string>()
-      const rawNames = String(component.props.pinNames || '').trim()
-      if (rawNames.includes('=')) {
-        rawNames
-          .split(',')
-          .map((entry: string) => entry.trim())
-          .filter(Boolean)
-          .forEach((entry: string) => {
-            const [slot, ...rest] = entry.split('=')
-            const slotKey = slot.trim().toUpperCase()
-            const pinLabel = rest.join('=').trim()
-            if (slotKey && pinLabel) {
-              namedMap.set(slotKey, pinLabel)
-            }
-          })
-      }
-
-      const legacyNames = !rawNames.includes('=')
-        ? rawNames.split(',').map((value: string) => value.trim()).filter(Boolean)
-        : []
-      let legacyCursor = 0
-
-      const getName = (slotKey: string, fallback: string) => {
-        if (namedMap.has(slotKey)) return namedMap.get(slotKey) as string
-        if (legacyCursor < legacyNames.length) {
-          const fromLegacy = legacyNames[legacyCursor]
-          legacyCursor += 1
-          return fromLegacy
-        }
-        return fallback
-      }
-
-      const leftPins = Array.from({ length: leftCount }).map((_, index) => {
-        const slotKey = `L${index + 1}`
-        return {
-          name: getName(slotKey, `L${index + 1}`),
-          x: 0,
-          y: 20 + index * 20
-        }
-      })
-
-      const rightPins = Array.from({ length: rightCount }).map((_, index) => {
-        const slotKey = `R${index + 1}`
-        return {
-          name: getName(slotKey, `R${index + 1}`),
-          x: bodyWidth,
-          y: 20 + index * 20
-        }
-      })
-
-      const topPins = Array.from({ length: topCount }).map((_, index) => {
-        const slotKey = `U${index + 1}`
-        return {
-          name: getName(slotKey, `U${index + 1}`),
-          x: 20 + index * 20,
-          y: 0
-        }
-      })
-
-      const bottomPins = Array.from({ length: bottomCount }).map((_, index) => {
-        const slotKey = `D${index + 1}`
-        return {
-          name: getName(slotKey, `D${index + 1}`),
-          x: 20 + index * 20,
-          y: bodyHeight
-        }
-      })
-
-      return [...leftPins, ...rightPins, ...topPins, ...bottomPins]
+      const layout = buildCustomChipLayout(component.props, component.name)
+      return layout.pins.map((pin) => ({
+        name: pin.name,
+        x: pin.x,
+        y: pin.y
+      }))
     }
 
     const schematic = getPinConfig(component.catalogId)
@@ -1195,6 +1122,153 @@ export const Canvas: React.FC = () => {
     )
   }
 
+  const renderCustomChipInstance = (
+    component: PlacedComponent,
+    isSelected: boolean,
+    baseWidth: number,
+    baseHeight: number,
+    rotation: number
+  ) => {
+    const layout = buildCustomChipLayout(component.props, component.name)
+    const strokeColor = isSelected ? '#007acc' : '#4CAF50'
+    const pins = getDynamicPins(component)
+    const pinByName = new Map(layout.pins.map(pin => [pin.name, pin]))
+
+    return (
+      <svg
+        width={baseWidth}
+        height={baseHeight}
+        viewBox={`0 0 ${baseWidth} ${baseHeight}`}
+        style={{
+          overflow: 'visible',
+          transform: `rotate(${rotation}deg)`,
+          transformOrigin: 'center center'
+        }}
+      >
+        <rect
+          x={layout.bodyX}
+          y={layout.bodyY}
+          width={layout.bodyWidth}
+          height={layout.bodyHeight}
+          rx={6}
+          ry={6}
+          fill="none"
+          stroke={strokeColor}
+          strokeWidth={2}
+        />
+
+        <text
+          x={layout.bodyX + layout.bodyWidth / 2}
+          y={layout.bodyY + 16}
+          fill={strokeColor}
+          fontSize={layout.titleFontSize}
+          fontWeight={700}
+          textAnchor="middle"
+        >
+          {layout.title}
+        </text>
+
+        {layout.subtitle && (
+          <text
+            x={layout.bodyX + layout.bodyWidth / 2}
+            y={layout.bodyY + 30}
+            fill={strokeColor}
+            fontSize={layout.subtitleFontSize}
+            textAnchor="middle"
+          >
+            {layout.subtitle}
+          </text>
+        )}
+
+        {layout.pins.map((pin) => (
+          <text
+            key={`label-${pin.name}`}
+            x={pin.labelX}
+            y={pin.labelY}
+            fill={strokeColor}
+            fontSize={layout.pinFontSize}
+            textAnchor={pin.textAnchor}
+            pointerEvents="none"
+          >
+            {pin.name}
+          </text>
+        ))}
+
+        {pins.map((pin) => {
+          const isPinNearCursor = cursorNearPin?.componentId === component.id && cursorNearPin?.pinName === pin.name
+          const isPinWiringStart = wiringStart?.componentId === component.id && wiringStart?.pinName === pin.name
+          const pinKey = `${component.id}:${pin.name}`
+          const isPinCandidate = subcircuitCreation.candidatePins.some(
+            candidate => `${candidate.componentId}:${candidate.pinName}` === pinKey
+          )
+          const isPinSelectedForSubcircuit = subcircuitCreation.selectedPins.some(
+            selected => `${selected.componentId}:${selected.pinName}` === pinKey
+          )
+          const radius = isPinNearCursor ? 6 : 5
+          const layoutPin = pinByName.get(pin.name)
+
+          return (
+            <g key={pin.name}>
+              <circle
+                cx={pin.x}
+                cy={pin.y}
+                r={radius}
+                fill={isPinSelectedForSubcircuit
+                  ? '#FF5722'
+                  : isPinCandidate && subcircuitCreation.active
+                  ? '#FFD54F'
+                  : isPinWiringStart
+                  ? '#FFC107'
+                  : isPinNearCursor
+                  ? '#2196F3'
+                  : '#888'}
+                stroke="#1e1e1e"
+                strokeWidth={2}
+              />
+              {layoutPin && layoutPin.side !== 'top' && layoutPin.side !== 'bottom' && (
+                <line
+                  x1={layoutPin.side === 'left' ? layoutPin.x - 8 : layoutPin.x + 8}
+                  y1={layoutPin.y}
+                  x2={layoutPin.x}
+                  y2={layoutPin.y}
+                  stroke={strokeColor}
+                  strokeWidth={1.5}
+                  pointerEvents="none"
+                />
+              )}
+              <circle
+                cx={pin.x}
+                cy={pin.y}
+                r={12}
+                fill="rgba(0,0,0,0.001)"
+                style={{ cursor: subcircuitCreation.active ? 'pointer' : 'crosshair' }}
+                onClick={(e) => handlePinClick(e, component.id, pin.name)}
+                onDoubleClick={(e) => {
+                  e.stopPropagation()
+                  disconnectPin(component.id, pin.name)
+                }}
+              />
+            </g>
+          )
+        })}
+
+        {isSelected && (
+          <rect
+            x={0}
+            y={0}
+            width={baseWidth}
+            height={baseHeight}
+            fill="none"
+            stroke="#007acc"
+            strokeWidth={1.5}
+            strokeDasharray="4,3"
+            pointerEvents="none"
+          />
+        )}
+      </svg>
+    )
+  }
+
   // Check if cursor is near any pin
   const checkCursorNearPin = (e: React.MouseEvent) => {
     const mousePoint = getWorldPointFromClient(e.clientX, e.clientY)
@@ -1518,7 +1592,9 @@ export const Canvas: React.FC = () => {
             const isSelected = selectedComponentIds.includes(component.id)
             const isSubcircuit = component.catalogId === 'subcircuit-instance'
             const isSheetInstance = component.catalogId === 'sheet-instance'
+            const isCustomChip = component.catalogId === 'customchip'
             const useCustomSymbolRenderer = isCustomSymbolComponent(component)
+            const useCustomChipRenderer = isCustomChip
             const isNetPort = component.catalogId === 'netport'
             const isPublicPort = component.catalogId === 'public-port'
             const isNet = component.catalogId === 'net'
@@ -1535,7 +1611,7 @@ export const Canvas: React.FC = () => {
               return null
             }
 
-            if (!isSubcircuit && !isSheetInstance && !useCustomSymbolRenderer && !isNetPort && !isPublicPort && !isNetLabel && !getCatalogItem(component.catalogId)) {
+            if (!isSubcircuit && !isSheetInstance && !useCustomSymbolRenderer && !useCustomChipRenderer && !isNetPort && !isPublicPort && !isNetLabel && !getCatalogItem(component.catalogId)) {
               return null
             }
             
@@ -1716,6 +1792,7 @@ export const Canvas: React.FC = () => {
                 )}
 
                 {!isSubcircuit && !isSheetInstance && !useCustomSymbolRenderer && !isNetPort && !isPublicPort && !isNetLabel && (
+                  !useCustomChipRenderer && (
                   <div
                     style={{
                       width: baseSize.width,
@@ -1731,10 +1808,15 @@ export const Canvas: React.FC = () => {
                       color={isSelected ? '#007acc' : '#4CAF50'}
                     />
                   </div>
+                  )
                 )}
 
                 {useCustomSymbolRenderer && (
                   renderCustomSymbolInstance(component, isSelected, baseSize.width, baseSize.height, rotation)
+                )}
+
+                {useCustomChipRenderer && (
+                  renderCustomChipInstance(component, isSelected, baseSize.width, baseSize.height, rotation)
                 )}
 
                 {isNet && (
@@ -1757,7 +1839,7 @@ export const Canvas: React.FC = () => {
                 )}
 
                 {/* Render pins */}
-                {!useCustomSymbolRenderer && pins.map((pin) => {
+                {!useCustomSymbolRenderer && !useCustomChipRenderer && pins.map((pin) => {
                   const rotatedPin = rotatePoint(pin.x, pin.y, baseSize.width, baseSize.height, rotation)
                   const isPinNearCursor = cursorNearPin?.componentId === component.id && cursorNearPin?.pinName === pin.name
                   const isPinWiringStart = wiringStart?.componentId === component.id && wiringStart?.pinName === pin.name
