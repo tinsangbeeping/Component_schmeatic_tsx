@@ -8,6 +8,7 @@ type Props = {
   onSelectBlock: (blockId: string, additive: boolean) => void
   onMoveBlock: (blockId: string, x: number, y: number) => void
   onRenameBlock?: (blockId: string, title: string) => void
+  onOpenBlock?: (blockId: string) => void
 }
 
 function isNetHub(block?: DiagramBlock) {
@@ -21,6 +22,7 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
   onSelectBlock,
   onMoveBlock,
   onRenameBlock,
+  onOpenBlock,
 }) => {
   const blockById = useMemo(
     () => new Map(blocks.map((block) => [block.id, block])),
@@ -190,6 +192,10 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
                     contentEditable
                     suppressContentEditableWarning
                     onMouseDown={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation()
+                      onOpenBlock?.(block.id)
+                    }}
                     onBlur={(e) => {
                       const next = e.currentTarget.textContent?.trim()
 

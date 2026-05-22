@@ -22,6 +22,8 @@ export const BlockDiagramEditorPage: React.FC = () => {
     [placedComponents, wires],
   )
 
+  const setActiveFilePath = useEditorStore((state) => state.setActiveFilePath)
+
   const [diagram, setDiagram] = useState<BlockDiagramState>(() =>
     createInitialDiagramState(rawGraph.rawBlocks, rawGraph.rawEdges),
   )
@@ -146,6 +148,24 @@ const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>(() 
     }))
   }
 
+  const onOpenBlock = (blockId: string) => {
+    const block = diagram.blocks.find((b) => b.id === blockId)
+    if (!block) return
+
+    const subcircuitComponent = placedComponents.find((component) =>
+      block.memberComponentIds.includes(component.id) &&
+      component.catalogId === 'subcircuit-instance'
+    )
+
+    const subcircuitPath =
+      subcircuitComponent?.props?.subcircuitPath ||
+      subcircuitComponent?.props?.filePath
+
+    if (typeof subcircuitPath === 'string' && subcircuitPath) {
+      setActiveFilePath(subcircuitPath)
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 400 }}>
       <div
@@ -218,6 +238,7 @@ const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>(() 
             blocks: renameDiagramBlock(prev.blocks, blockId, title),
           }))
         }}
+        onOpenBlock={onOpenBlock}
       />
 
       <div
