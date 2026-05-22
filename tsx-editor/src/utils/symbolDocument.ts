@@ -88,7 +88,7 @@ const normalizeLegacyArcShape = (shape: Record<string, any>): SymbolShape => {
     radius: Math.abs(toFiniteNumber(shape.radius)),
     startAngle: toFiniteNumber(shape.startAngle ?? shape.startAngleDegrees),
     endAngle: toFiniteNumber(shape.endAngle ?? shape.endAngleDegrees),
-    direction: rawDirection === 'counterclockwise' ? 'counterclockwise' : 'clockwise'
+    direction: rawDirection === 'clockwise' || rawDirection === 'counterclockwise' ? rawDirection : undefined
   }
 }
 
@@ -135,26 +135,26 @@ const normalizeSymbolPort = (port: Record<string, any>, fallbackOrder: number): 
     electricalDirection: port.electricalDirection,
     side: port.side,
     order: port.order !== undefined ? Number(port.order) : fallbackOrder,
-    x: toFiniteNumber(port.x ?? port.schX),
-    y: toFiniteNumber(port.y ?? port.schY)
+    schX: toFiniteNumber(port.schX ?? port.x),
+    schY: toFiniteNumber(port.schY ?? port.y)
   }
 }
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value))
 
 const snapPortToBoundary = (port: SymbolPort, width: number, height: number): SymbolPort => {
-  if (port.side === 'left') return { ...port, x: 0, y: clamp(port.y, 0, height) }
-  if (port.side === 'right') return { ...port, x: width, y: clamp(port.y, 0, height) }
-  if (port.side === 'top') return { ...port, x: clamp(port.x, 0, width), y: 0 }
-  return { ...port, x: clamp(port.x, 0, width), y: height }
+  if (port.side === 'left') return { ...port, schX: 0, schY: clamp(port.schY, 0, height) }
+  if (port.side === 'right') return { ...port, schX: width, schY: clamp(port.schY, 0, height) }
+  if (port.side === 'top') return { ...port, schX: clamp(port.schX, 0, width), schY: 0 }
+  return { ...port, schX: clamp(port.schX, 0, width), schY: height }
 }
 
 const distributePortsWithinBoundary = (ports: SymbolPort[], width: number, height: number): SymbolPort[] => {
   const needsRemap = ports.some((port) => {
     if (port.side === 'left' || port.side === 'right') {
-      return (port.x !== 0 && port.x !== width) || port.y < 0 || port.y > height
+      return (port.schX !== 0 && port.schX !== width) || port.schY < 0 || port.schY > height
     }
-    return (port.y !== 0 && port.y !== height) || port.x < 0 || port.x > width
+    return (port.schY !== 0 && port.schY !== height) || port.schX < 0 || port.schX > width
   })
 
   if (!needsRemap) {
@@ -182,7 +182,7 @@ const distributePortsWithinBoundary = (ports: SymbolPort[], width: number, heigh
   const sortPorts = (portsForSide: SymbolPort[], axis: 'x' | 'y') => {
     return [...portsForSide].sort((a, b) => {
       if (a.order !== undefined && b.order !== undefined && a.order !== b.order) return a.order - b.order
-      return a[axis] - b[axis]
+      return (axis === 'x' ? a.schX - b.schX : a.schY - b.schY)
     })
   }
 
@@ -197,10 +197,10 @@ const distributePortsWithinBoundary = (ports: SymbolPort[], width: number, heigh
   const bottomXs = distribute(bottom.length, margin, width - margin)
 
   return [
-    ...left.map((port, index) => ({ ...port, x: 0, y: leftYs[index] ?? height / 2 })),
-    ...right.map((port, index) => ({ ...port, x: width, y: rightYs[index] ?? height / 2 })),
-    ...top.map((port, index) => ({ ...port, x: topXs[index] ?? width / 2, y: 0 })),
-    ...bottom.map((port, index) => ({ ...port, x: bottomXs[index] ?? width / 2, y: height }))
+    ...left.map((port, index) => ({ ...port, schX: 0, schY: leftYs[index] ?? height / 2 })),
+    ...right.map((port, index) => ({ ...port, schX: width, schY: rightYs[index] ?? height / 2 })),
+    ...top.map((port, index) => ({ ...port, schX: topXs[index] ?? width / 2, schY: 0 })),
+    ...bottom.map((port, index) => ({ ...port, schX: bottomXs[index] ?? width / 2, schY: height }))
   ]
 }
 
@@ -288,7 +288,7 @@ const inferImportedSymbolHeight = (shapes: SymbolShape[], ports: SymbolPort[]) =
   })
 
   ports.forEach((port) => {
-    extend(port.x, port.y)
+    extend(port.schX, port.schY)
   })
 
   return {
@@ -328,7 +328,7 @@ const flipImportedShapeY = (shape: SymbolShape, symbolHeight: number): SymbolSha
 const flipImportedPortY = (port: SymbolPort, symbolHeight: number): SymbolPort => {
   return {
     ...port,
-    y: fromTscircuitY(port.y, symbolHeight)
+    schY: fromTscircuitY(port.schY, symbolHeight)
   }
 }
 
@@ -373,7 +373,8 @@ const symbolShapeToTsx = (shape: SymbolShape, symbolHeight: number): string => {
   }
 
   if (primitive.kind === 'schematicarc') {
-    return `<schematicarc center={{x: ${toTsxNumber(primitive.props.center.x)}, y: ${toTsxNumber(toTscircuitY(primitive.props.center.y, symbolHeight))}}} radius={${toTsxNumber(primitive.props.radius)}} startAngleDegrees={${toTsxNumber(primitive.props.startAngleDegrees)}} endAngleDegrees={${toTsxNumber(primitive.props.endAngleDegrees)}} direction="${primitive.props.direction}" />`
+    const directionPart = primitive.props.direction ? ` direction="${primitive.props.direction}"` : ''
+    return `<schematicarc center={{x: ${toTsxNumber(primitive.props.center.x)}, y: ${toTsxNumber(toTscircuitY(primitive.props.center.y, symbolHeight))}}} radius={${toTsxNumber(primitive.props.radius)}} startAngleDegrees={${toTsxNumber(primitive.props.startAngleDegrees)}} endAngleDegrees={${toTsxNumber(primitive.props.endAngleDegrees)}}${directionPart} />`
   }
 
   return `<schematictext schX={${toTsxNumber(primitive.props.schX)}} schY={${toTsxNumber(toTscircuitY(primitive.props.schY, symbolHeight))}} text="${escapeStringLiteral(primitive.props.text)}" />`
@@ -387,10 +388,10 @@ const symbolPortToTsx = (port: SymbolPort, symbolWidth: number, symbolHeight: nu
     bottom: 'down'
   }
   const normalizedCoord = (() => {
-    if (port.side === 'left') return { x: 0, y: port.y }
-    if (port.side === 'right') return { x: symbolWidth, y: port.y }
-    if (port.side === 'top') return { x: port.x, y: 0 }
-    return { x: port.x, y: symbolHeight }
+    if (port.side === 'left') return { x: 0, y: port.schY }
+    if (port.side === 'right') return { x: symbolWidth, y: port.schY }
+    if (port.side === 'top') return { x: port.schX, y: 0 }
+    return { x: port.schX, y: symbolHeight }
   })()
   const sidePart = ` side="${port.side}"`
   const orderPart = port.order !== undefined ? ` order={${port.order}}` : ''
@@ -670,8 +671,8 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
       const parsedSide = ((): SymbolPortSide => {
         if (sideValue in directionAsSide) return directionAsSide[sideValue]
         if (rawDirection in directionAsSide) return directionAsSide[rawDirection]
-        const px = x.value ?? schX.value ?? 0
-        const py = y.value ?? schY.value ?? 0
+        const px = schX.value ?? x.value ?? 0
+        const py = schY.value ?? y.value ?? 0
         const absX = Math.abs(px)
         const absY = Math.abs(py)
         if (absX >= absY) return px >= 0 ? 'right' : 'left'
@@ -683,8 +684,8 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
         electricalDirection: parsedElectricalDirection,
         side: parsedSide,
         order: order.value !== null ? order.value : undefined,
-        x: x.value ?? schX.value ?? 0,
-        y: y.value ?? schY.value ?? 0
+        schX: schX.value ?? x.value ?? 0,
+        schY: schY.value ?? y.value ?? 0
       })
       if ((x.value ?? schX.value) === null || (y.value ?? schY.value) === null) {
         needsManualReview = true

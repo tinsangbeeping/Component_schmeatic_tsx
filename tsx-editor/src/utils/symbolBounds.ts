@@ -65,7 +65,7 @@ const shapePoints = (shape: SymbolShape): SymbolPoint[] => {
 
 export const getSymbolBoundsFromGeometry = (
   shapes: SymbolShape[],
-  ports: Array<{ x: number; y: number }> = [],
+  ports: Array<{ schX?: number; schY?: number; x?: number; y?: number }> = [],
   fallbackWidth = 120,
   fallbackHeight = 80
 ): SymbolBounds => {
@@ -76,7 +76,7 @@ export const getSymbolBoundsFromGeometry = (
   })
 
   ports.forEach((port) => {
-    points.push({ x: toFinite(port.x), y: toFinite(port.y) })
+    points.push({ x: toFinite(port.schX ?? port.x), y: toFinite(port.schY ?? port.y) })
   })
 
   if (points.length === 0) {
@@ -137,7 +137,7 @@ export const getSymbolBounds = (symbolDefinition: SymbolDefinition | undefined):
     : []
 
   const ports = Array.isArray(symbolDefinition.ports)
-    ? symbolDefinition.ports.map((port) => ({ x: Number(port.x || 0), y: Number(port.y || 0) }))
+    ? symbolDefinition.ports.map((port) => ({ schX: Number(port.schX ?? (port as any).x ?? 0), schY: Number(port.schY ?? (port as any).y ?? 0) }))
     : []
 
   return getSymbolBoundsFromGeometry(shapes, ports, fallbackWidth, fallbackHeight)

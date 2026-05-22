@@ -62,6 +62,9 @@ export interface WireConnection {
   }>
   // Editor-only metadata; not emitted as tscircuit JSX attribute.
   routingIntent?: 'manual' | 'semantic-auto' | 'orthogonal-auto' | 'bus'
+  // Electrical graph edges may be logical-only. Hidden/label-only wires remain
+  // part of the netlist/export truth but are not rendered as blue schematic wires.
+  visualMode?: 'wire' | 'label-only' | 'hidden'
   tsxSnippet?: string
 }
 

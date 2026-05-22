@@ -196,8 +196,8 @@ export const SymbolPropertiesPanel: React.FC<SymbolPropertiesPanelProps> = ({
               {electricalDirections.map(direction => <option key={direction} value={direction}>{direction}</option>)}
             </select>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <input type="number" value={selectedPort.x} onChange={e => onDocumentChange({ ...document, ports: document.ports.map(port => port.id === selectedPort.id ? { ...port, x: toNumber(e.target.value, selectedPort.x) } : port) })} />
-              <input type="number" value={selectedPort.y} onChange={e => onDocumentChange({ ...document, ports: document.ports.map(port => port.id === selectedPort.id ? { ...port, y: toNumber(e.target.value, selectedPort.y) } : port) })} />
+              <input type="number" value={selectedPort.schX} onChange={e => onDocumentChange({ ...document, ports: document.ports.map(port => port.id === selectedPort.id ? { ...port, schX: toNumber(e.target.value, selectedPort.schX) } : port) })} />
+              <input type="number" value={selectedPort.schY} onChange={e => onDocumentChange({ ...document, ports: document.ports.map(port => port.id === selectedPort.id ? { ...port, schY: toNumber(e.target.value, selectedPort.schY) } : port) })} />
             </div>
             <button
               className="btn btn-secondary"

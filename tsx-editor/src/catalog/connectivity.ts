@@ -62,11 +62,10 @@ export const NetLabelItem: CatalogItem = {
       schY: 0
     }
   },
-  // Valid tscircuit tag: <netlabel net="NAME" />
-  // schX/schY are editor-internal positioning; position is not part of tscircuit netlabel spec.
+  // Visual alias only: this does not create electrical connectivity by itself.
   emitTSX: (props) => {
-    const { net } = props
-    return `<netlabel net="${net}" />`
+    const { net, schX, schY } = props
+    return `<netlabel net="${net}" schX={${schX}} schY={${schY}} />`
   }
 }
 
@@ -83,16 +82,33 @@ export const NetItem: CatalogItem = {
         type: 'string',
         label: 'Net Name',
         default: 'VCC'
+      },
+      role: {
+        type: 'select',
+        label: 'Role',
+        default: 'signal',
+        options: ['signal', 'power', 'ground', 'analog', 'unknown']
+      },
+      scope: {
+        type: 'select',
+        label: 'Scope',
+        default: 'global',
+        options: ['global', 'local']
       }
     },
     defaultProps: {
-      name: 'VCC'
+      name: 'VCC',
+      role: 'signal',
+      scope: 'global'
     }
   },
-  // 'net' is an internal editor placeholder for named nets.
-  // tscircuit nets are implicit via trace selectors (net.NAME) and netlabel tags.
-  // This item must NOT emit any JSX into exported tscircuit files.
-  emitTSX: (_props) => ''
+  // Invisible electrical truth. Visual aliases are separate <netlabel> elements.
+  emitTSX: (props) => {
+    const { name, role, scope } = props
+    const roleAttr = role ? ` role="${role}"` : ''
+    const scopeAttr = scope ? ` scope="${scope}"` : ''
+    return `<net name="${name}"${roleAttr}${scopeAttr} />`
+  }
 }
 
 // Jumper catalog item

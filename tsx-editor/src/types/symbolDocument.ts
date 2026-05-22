@@ -64,8 +64,8 @@ export interface SymbolPort {
   electricalDirection?: ElectricalDirection
   side: SymbolPortSide
   order?: number
-  x: number
-  y: number
+  schX: number
+  schY: number
 }
 
 export interface SymbolDocument {

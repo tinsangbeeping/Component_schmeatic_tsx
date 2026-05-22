@@ -1,7 +1,15 @@
-import type { ExportGraph, ExportTrace, ExportNetLabel } from '../types/exportGraph'
+import type { ExportGraph, ExportTrace, ExportNetLabel, ExportNetDeclaration } from '../types/exportGraph'
 
 const compileTrace = (trace: ExportTrace): string => {
   return `<trace from="${trace.from}" to="${trace.to}" />`
+}
+
+const compileNet = (net: ExportNetDeclaration): string => {
+  const role = String(net.role || '').trim()
+  const scope = String(net.scope || '').trim()
+  const roleAttr = role ? ` role="${role}"` : ''
+  const scopeAttr = scope ? ` scope="${scope}"` : ''
+  return `<net name="${net.name}"${roleAttr}${scopeAttr} />`
 }
 
 const compileNetLabel = (label: ExportNetLabel): string => {
@@ -17,6 +25,10 @@ const compileNetLabel = (label: ExportNetLabel): string => {
 export const compileExportGraphToTSXNodes = (graph: ExportGraph): string[] => {
   const out: string[] = []
   graph.nodes.forEach((node) => {
+    if (node.kind === 'net') {
+      out.push(compileNet(node))
+      return
+    }
     if (node.kind === 'trace') {
       out.push(compileTrace(node))
       return

@@ -54,13 +54,10 @@ class UnionFind {
 const endpointKey = (componentId: string, pinName: string) => `${componentId}::${pinName}`
 
 const isNetLike = (component: PlacedComponent | undefined) =>
-  !!component && (component.catalogId === 'net' || component.catalogId === 'netport' || component.catalogId === 'netlabel')
+  !!component && (component.catalogId === 'net' || component.catalogId === 'netport')
 
 const explicitNetName = (component: PlacedComponent | undefined): string => {
   if (!component) return ''
-  if (component.catalogId === 'netlabel') {
-    return String(component.props.net || component.props.netName || '').trim().toUpperCase()
-  }
   if (component.catalogId === 'net' || component.catalogId === 'netport') {
     return String(component.props.netName || component.props.name || component.name || '').trim().toUpperCase()
   }
@@ -72,7 +69,8 @@ const nextUnnamedNetName = (index: number) => `N${index}`
 /**
  * Converts visual wires into electrical connected components.
  * This is the foundation KiCad-style junction behavior needs:
- * endpoints connected by traces, net labels, or explicit net ports become one logical net.
+ * endpoints connected by traces or explicit net ports become one logical net.
+ * Net labels are visual aliases only and do not create electrical connectivity.
  */
 export function extractNetlistFromGraph(
   components: PlacedComponent[],
@@ -85,12 +83,12 @@ export function extractNetlistFromGraph(
   solved.endpointKeys.forEach((key) => uf.add(key))
   solved.unions.forEach(([a, b]) => uf.union(a, b))
 
-  // A net/netport/netlabel represents a named electrical node; all pins on the same named node are one net.
+  // A net/netport represents a named electrical node; all anchors with the same name are one net.
   const firstEndpointForNetName = new Map<string, string>()
   components.forEach((component) => {
     const name = explicitNetName(component)
     if (!name) return
-    // netlabel, netport, and net all use the same virtual 'port' pin as their anchor endpoint.
+    // netport and net use the same virtual 'port' pin as their anchor endpoint.
     const key = endpointKey(component.id, 'port')
     uf.add(key)
     const existing = firstEndpointForNetName.get(name)

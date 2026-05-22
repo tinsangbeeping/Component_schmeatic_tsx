@@ -26,6 +26,10 @@ const normalizeSymbolRef = (value: string): string => {
   return normalized
 }
 
+const PIN_HIT_RADIUS = 14
+const PIN_NEAR_THRESHOLD = 18
+const MIN_PORT_GAP = 14
+
 export const Canvas: React.FC = () => {
   type LocalTransform = {
     translateX: number
@@ -106,14 +110,14 @@ export const Canvas: React.FC = () => {
       const radius = Math.max(1, Number(shape.radius || 1))
       const startAngle = Number((shape.startAngle ?? shape.startAngleDegrees) || 0)
       const endAngle = Number((shape.endAngle ?? shape.endAngleDegrees) || 180)
-      const direction = String(shape.direction || 'clockwise').toLowerCase() === 'counterclockwise' ? 'counterclockwise' : 'clockwise'
+      const direction = String(shape.direction || 'counterclockwise').toLowerCase() === 'clockwise' ? 'clockwise' : 'counterclockwise'
       const startPoint = getArcEndpoint(center.x, center.y, radius, startAngle)
       const endPoint = getArcEndpoint(center.x, center.y, radius, endAngle)
       const delta = direction === 'counterclockwise'
         ? ((startAngle - endAngle) % 360 + 360) % 360
         : ((endAngle - startAngle) % 360 + 360) % 360
       const largeArc = delta > 180 ? 1 : 0
-      const sweepFlag = direction === 'counterclockwise' ? 0 : 1
+      const sweepFlag = direction === 'counterclockwise' ? 1 : 0
       const d = `M ${startPoint.x} ${startPoint.y} A ${radius} ${radius} 0 ${largeArc} ${sweepFlag} ${endPoint.x} ${endPoint.y}`
       return <path key={key} d={d} stroke={strokeColor} strokeWidth={2} fill="none" />
     }
@@ -247,8 +251,8 @@ export const Canvas: React.FC = () => {
 
     const resolvedPorts = (symbolDefinition?.ports || []).map(port => ({
       name: String(port.name || ''),
-      schX: Number(port.x || 0),
-      schY: Number(port.y || 0),
+      schX: Number(port.schX ?? (port as any).x ?? 0),
+      schY: Number(port.schY ?? (port as any).y ?? 0),
       side: (port as any).side as string | undefined,
       order: (port as any).order as number | undefined
     }))
@@ -343,12 +347,59 @@ export const Canvas: React.FC = () => {
     return { x, y }
   }
 
+  const getResolvedPortSpreadSize = (resolved: ResolvedSymbolData) => {
+    const validSide = (side: unknown): 'left' | 'right' | 'top' | 'bottom' | undefined => {
+      if (side === 'left' || side === 'right' || side === 'top' || side === 'bottom') return side
+      return undefined
+    }
+
+    const sideCounts = {
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0
+    }
+
+    resolved.ports
+      .filter(port => String(port.name || '').trim().length > 0)
+      .forEach((port) => {
+        const localX = Number(port.schX) + resolved.localTransform.translateX
+        const localY = Number(port.schY) + resolved.localTransform.translateY
+        const fallbackSide = (() => {
+          if (Math.abs(localX - resolved.bounds.width / 2) >= Math.abs(localY - resolved.bounds.height / 2)) {
+            return localX >= resolved.bounds.width / 2 ? 'right' : 'left'
+          }
+          return localY >= resolved.bounds.height / 2 ? 'bottom' : 'top'
+        })()
+        const side = validSide(port.side) || fallbackSide
+        sideCounts[side] += 1
+      })
+
+    const verticalSlots = Math.max(sideCounts.left, sideCounts.right)
+    const horizontalSlots = Math.max(sideCounts.top, sideCounts.bottom)
+
+    const spreadHeight = Math.max(
+      resolved.bounds.height,
+      verticalSlots > 1 ? (verticalSlots + 1) * MIN_PORT_GAP : resolved.bounds.height,
+    )
+    const spreadWidth = Math.max(
+      resolved.bounds.width,
+      horizontalSlots > 1 ? (horizontalSlots + 1) * MIN_PORT_GAP : resolved.bounds.width,
+    )
+
+    return {
+      width: spreadWidth,
+      height: spreadHeight
+    }
+  }
+
   const getBaseComponentSize = (component: PlacedComponent) => {
     if (isCustomSymbolComponent(component)) {
       const resolved = getResolvedSymbolData(component)
+      const spread = getResolvedPortSpreadSize(resolved)
       return {
-        width: resolved.bounds.width,
-        height: resolved.bounds.height
+        width: spread.width,
+        height: spread.height
       }
     }
 
@@ -385,6 +436,7 @@ export const Canvas: React.FC = () => {
   const getDynamicPins = (component: PlacedComponent) => {
     if (isCustomSymbolComponent(component)) {
       const resolved = getResolvedSymbolData(component)
+      const spread = getResolvedPortSpreadSize(resolved)
       const symbolPorts = resolved.ports
       if (symbolPorts.length > 0) {
         const validSide = (side: unknown): 'left' | 'right' | 'top' | 'bottom' | undefined => {
@@ -462,22 +514,57 @@ export const Canvas: React.FC = () => {
           return ((rank + 1) * span) / (members.length + 1)
         }
 
+        const sideNeedsRedistribution = (
+          members: number[],
+          axis: 'x' | 'y'
+        ): boolean => {
+          if (members.length <= 1) return false
+
+          const coords = members
+            .map((memberIndex) => Number(sorted[memberIndex][axis]))
+            .filter((value) => Number.isFinite(value))
+            .sort((a, b) => a - b)
+
+          if (coords.length !== members.length) return true
+
+          for (let i = 1; i < coords.length; i += 1) {
+            if (coords[i] - coords[i - 1] < MIN_PORT_GAP) return true
+          }
+
+          return false
+        }
+
+        const redistributeBySide = {
+          left: sideMembers.left.length > 1 || sideNeedsRedistribution(sideMembers.left, 'y'),
+          right: sideMembers.right.length > 1 || sideNeedsRedistribution(sideMembers.right, 'y'),
+          top: sideMembers.top.length > 1 || sideNeedsRedistribution(sideMembers.top, 'x'),
+          bottom: sideMembers.bottom.length > 1 || sideNeedsRedistribution(sideMembers.bottom, 'x')
+        }
+
         return sorted.map((port, index) => {
           let x = Number(port.x)
           let y = Number(port.y)
 
           if (port.side === 'left') {
             x = 0
-            if (!Number.isFinite(y)) y = distributedCoord(sideMembers.left, index, resolved.bounds.height)
+            if (redistributeBySide.left || !Number.isFinite(y)) {
+              y = distributedCoord(sideMembers.left, index, spread.height)
+            }
           } else if (port.side === 'right') {
-            x = resolved.bounds.width
-            if (!Number.isFinite(y)) y = distributedCoord(sideMembers.right, index, resolved.bounds.height)
+            x = spread.width
+            if (redistributeBySide.right || !Number.isFinite(y)) {
+              y = distributedCoord(sideMembers.right, index, spread.height)
+            }
           } else if (port.side === 'top') {
             y = 0
-            if (!Number.isFinite(x)) x = distributedCoord(sideMembers.top, index, resolved.bounds.width)
+            if (redistributeBySide.top || !Number.isFinite(x)) {
+              x = distributedCoord(sideMembers.top, index, spread.width)
+            }
           } else {
-            y = resolved.bounds.height
-            if (!Number.isFinite(x)) x = distributedCoord(sideMembers.bottom, index, resolved.bounds.width)
+            y = spread.height
+            if (redistributeBySide.bottom || !Number.isFinite(x)) {
+              x = distributedCoord(sideMembers.bottom, index, spread.width)
+            }
           }
 
           return {
@@ -1062,8 +1149,8 @@ export const Canvas: React.FC = () => {
             <rect
               x={0}
               y={0}
-              width={resolved.bounds.width}
-              height={resolved.bounds.height}
+              width={baseWidth}
+              height={baseHeight}
               fill="none"
               stroke="#007acc"
               strokeWidth={1.5}
@@ -1105,7 +1192,7 @@ export const Canvas: React.FC = () => {
                 <circle
                   cx={pin.x}
                   cy={pin.y}
-                  r={12}
+                  r={PIN_HIT_RADIUS}
                   fill="rgba(0,0,0,0.001)"
                   style={{ cursor: subcircuitCreation.active ? 'pointer' : 'crosshair' }}
                   onClick={(e) => handlePinClick(e, component.id, pin.name)}
@@ -1239,7 +1326,7 @@ export const Canvas: React.FC = () => {
               <circle
                 cx={pin.x}
                 cy={pin.y}
-                r={12}
+                r={PIN_HIT_RADIUS}
                 fill="rgba(0,0,0,0.001)"
                 style={{ cursor: subcircuitCreation.active ? 'pointer' : 'crosshair' }}
                 onClick={(e) => handlePinClick(e, component.id, pin.name)}
@@ -1288,7 +1375,7 @@ export const Canvas: React.FC = () => {
           Math.pow(mousePoint.x - pinPos.x, 2) + Math.pow(mousePoint.y - pinPos.y, 2)
         )
 
-        if (distance < 15) { // 15px threshold
+        if (distance < PIN_NEAR_THRESHOLD) {
           nearPin = { componentId: component.id, pinName: pin.name }
           break
         }
@@ -1377,6 +1464,7 @@ export const Canvas: React.FC = () => {
   const endpointUseCount = new Map<string, number>()
   const renderedPathUseCount = new Map<string, number>()
   wires.forEach((wire) => {
+    if (wire.visualMode === 'hidden' || wire.visualMode === 'label-only') return
     const fromComp = placedComponents.find(c => c.id === wire.from.componentId)
     const toComp = placedComponents.find(c => c.id === wire.to.componentId)
     if (!fromComp || !toComp) return
@@ -1391,6 +1479,8 @@ export const Canvas: React.FC = () => {
 
   // Render wire between two pins
   const renderWire = (wire: any) => {
+    if (wire.visualMode === 'hidden' || wire.visualMode === 'label-only') return null
+
     const fromComp = placedComponents.find(c => c.id === wire.from.componentId)
     const toComp = placedComponents.find(c => c.id === wire.to.componentId)
 

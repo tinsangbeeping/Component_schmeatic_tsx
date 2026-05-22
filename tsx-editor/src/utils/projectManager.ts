@@ -555,6 +555,16 @@ export const extractBatchFilesFromZip = async (
   input: Blob | ArrayBuffer | Uint8Array
 ): Promise<Array<{ fileName: string; content: string }>> => {
   const zip = await JSZip.loadAsync(input)
+  const allNormalizedNames = Object.values(zip.files)
+    .filter(entry => !entry.dir)
+    .map(entry => entry.name.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, ''))
+    .filter(Boolean)
+  const packageJsonPath = allNormalizedNames
+    .filter(name => /(^|\/)package\.json$/i.test(name))
+    .sort((a, b) => a.split('/').length - b.split('/').length)[0]
+  const packageRootPrefix = packageJsonPath
+    ? packageJsonPath.split('/').slice(0, -1).join('/')
+    : ''
   const candidateEntries = Object.values(zip.files)
     .filter(entry => !entry.dir)
     .filter(entry => /\.tsx$/i.test(entry.name))
@@ -568,16 +578,17 @@ export const extractBatchFilesFromZip = async (
     .filter(Boolean)
   const firstRoot = rootSegments[0] || ''
   const hasSingleTopLevelRoot = !!firstRoot && rootSegments.every(segment => segment === firstRoot)
+  const stripRootPrefix = packageRootPrefix || (hasSingleTopLevelRoot ? firstRoot : '')
 
   const files: Array<{ fileName: string; content: string }> = []
 
   for (const entry of candidateEntries) {
     const normalizedName = entry.name.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '')
-    const fileName = hasSingleTopLevelRoot
-      ? normalizedName.replace(new RegExp(`^${firstRoot}/`), '')
+    const fileName = stripRootPrefix
+      ? normalizedName.replace(new RegExp(`^${stripRootPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/`), '')
       : normalizedName
 
-    if (!fileName) continue
+    if (!fileName || (fileName === normalizedName && !!packageRootPrefix)) continue
 
     const content = await entry.async('string')
     if (!content.trim()) continue
@@ -746,14 +757,14 @@ const isNonDegenerateShape = (shape: Record<string, any>): boolean => {
 
 const normalizeSymbolGeometry = (
   rawShapes: Array<Record<string, any>>,
-  rawPorts: Array<{ name: string; x: number; y: number; side?: 'left' | 'right' | 'top' | 'bottom'; order?: number }>
+  rawPorts: Array<{ name: string; schX?: number; schY?: number; x?: number; y?: number; side?: 'left' | 'right' | 'top' | 'bottom'; order?: number }>
 ): {
   width: number
   height: number
   bounds: { minX: number; minY: number; maxX: number; maxY: number }
   origin: { x: number; y: number }
   shapes: Array<Record<string, any>>
-  ports: Array<{ name: string; x: number; y: number; side?: 'left' | 'right' | 'top' | 'bottom'; order?: number }>
+  ports: Array<{ name: string; schX: number; schY: number; side?: 'left' | 'right' | 'top' | 'bottom'; order?: number }>
 } => {
   const shapes = rawShapes.filter(isNonDegenerateShape)
 
@@ -822,8 +833,8 @@ const normalizeSymbolGeometry = (
     .filter(port => String(port.name || '').trim().length > 0)
     .map((port, index) => ({
       name: String(port.name || '').trim(),
-      x: toFiniteNumber(port.x),
-      y: toFiniteNumber(port.y),
+      schX: toFiniteNumber(port.schX ?? port.x),
+      schY: toFiniteNumber(port.schY ?? port.y),
       ...(port.side ? { side: port.side } : {}),
       order: port.order !== undefined ? port.order : index
     }))
@@ -856,13 +867,13 @@ export const extractAllSymbols = (fsMap: FSMap): SymbolDefinition[] => {
     const rawPorts = parsedDoc.ports.length > 0
       ? parsedDoc.ports.map(port => ({
           name: port.name,
-          x: toFiniteNumber(port.x),
-          y: toFiniteNumber(port.y),
+          schX: toFiniteNumber(port.schX),
+          schY: toFiniteNumber(port.schY),
           electricalDirection: port.electricalDirection,
           side: port.side,
           order: port.order
         }))
-      : extractPortsFromSymbolComponentContent(content).map(portName => ({ name: portName, x: 0, y: 0 }))
+      : extractPortsFromSymbolComponentContent(content).map(portName => ({ name: portName, schX: 0, schY: 0 }))
 
     const normalized = normalizeSymbolGeometry(
       parsedDoc.shapes.map(shape => ({ ...shape })) as Array<Record<string, any>>,

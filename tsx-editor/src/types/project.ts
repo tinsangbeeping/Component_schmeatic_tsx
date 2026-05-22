@@ -62,8 +62,8 @@ export interface SymbolDefinition {
   scalePolicy?: 'fit-local-bounds' | 'fixed'
   ports: Array<{
     name: string
-    x: number
-    y: number
+    schX: number
+    schY: number
     electricalDirection?: 'input' | 'output' | 'inout' | 'passive'
     side?: 'left' | 'right' | 'top' | 'bottom'
     order?: number
