@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState, useCallback } from 'react'
+import React, { useCallback, useMemo, useRef, useState } from 'react'
 import type { DiagramBlock, DiagramEdge } from '../types/blockDiagram'
 
 const MIN_SCALE = 0.1
@@ -11,29 +11,12 @@ type Props = {
   selectedBlockIds: string[]
   onSelectBlock: (blockId: string, additive: boolean) => void
   onMoveBlock: (blockId: string, x: number, y: number) => void
+  onRenameBlock?: (blockId: string, title: string) => void
   onOpenBlock?: (blockId: string) => void
 }
 
 function isNetHub(block?: DiagramBlock) {
   return !!block && block.kind === 'connector' && block.memberComponentIds.length === 0
-}
-
-function edgeStyle(edge: DiagramEdge) {
-  if (edge.relation === 'hierarchy') {
-    return {
-      stroke: '#94a3b8',
-      strokeDasharray: '6 5',
-      opacity: 0.8,
-      width: 1.5,
-    }
-  }
-
-  return {
-    stroke: '#6ea8fe',
-    strokeDasharray: undefined,
-    opacity: 0.9,
-    width: Math.min(4, Math.max(2, edge.strength)),
-  }
 }
 
 export const BlockDiagramCanvas: React.FC<Props> = ({
@@ -42,6 +25,7 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
   selectedBlockIds,
   onSelectBlock,
   onMoveBlock,
+  onRenameBlock,
   onOpenBlock,
 }) => {
   const blockById = useMemo(
@@ -68,6 +52,7 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
     const mouseX = e.clientX - rect.left
     const mouseY = e.clientY - rect.top
     const delta = -e.deltaY * ZOOM_FACTOR
+
     setScale((prev) => {
       const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, prev + delta * prev))
       const ratio = next / prev
@@ -78,8 +63,9 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
   }, [])
 
   const onBackgroundMouseDown = (e: React.MouseEvent) => {
-    // Only pan on direct background click (not block drag)
+    // Only pan from direct background mousedown (not block drag).
     if ((e.target as HTMLElement) !== e.currentTarget) return
+
     isPanningRef.current = true
     panStartRef.current = { x: e.clientX, y: e.clientY, ox: offsetX, oy: offsetY }
 
@@ -135,12 +121,17 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
       ref={outerRef}
       onWheel={onWheel}
       onMouseDown={onBackgroundMouseDown}
-      style={{ flex: 1, position: 'relative', overflow: 'hidden', background: '#1e1e1e', cursor: 'grab' }}
+      style={{
+        flex: 1,
+        position: 'relative',
+        overflow: 'hidden',
+        background: '#1e1e1e',
+        cursor: 'grab',
+      }}
     >
-      {/* Reset view button */}
       <button
         onClick={resetView}
-        title="Back to origin (reset zoom & pan)"
+        title="Back to origin (reset zoom and pan)"
         style={{
           position: 'absolute',
           top: 10,
@@ -153,15 +144,11 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
           padding: '4px 10px',
           cursor: 'pointer',
           fontSize: 12,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 4,
         }}
       >
-        ⌖ Reset View
+        Reset View
       </button>
 
-      {/* Zoom indicator */}
       <div
         style={{
           position: 'absolute',
@@ -189,140 +176,170 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
           transformOrigin: '0 0',
         }}
       >
-      <div style={{ position: 'relative', width: canvasWidth, height: canvasHeight }}>
-        <svg
-          width={canvasWidth}
-          height={canvasHeight}
-          style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
+        <div
+          style={{
+            position: 'relative',
+            width: canvasWidth,
+            height: canvasHeight,
+          }}
         >
-          {edges.map((edge) => {
-            const a = blockById.get(edge.sourceBlockId)
-            const b = blockById.get(edge.targetBlockId)
-            if (!a || !b) return null
+          <svg
+            width={canvasWidth}
+            height={canvasHeight}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              pointerEvents: 'none',
+            }}
+          >
+            {edges.map((edge) => {
+              const a = blockById.get(edge.sourceBlockId)
+              const b = blockById.get(edge.targetBlockId)
 
-            const ax = a.x + a.width / 2
-            const ay = a.y + a.height / 2
-            const bx = b.x + b.width / 2
-            const by = b.y + b.height / 2
-            const label = edge.labels.slice(0, 2).join(', ')
-            const style = edgeStyle(edge)
+              if (!a || !b) return null
 
-            return (
-              <g key={edge.id}>
-                <line
-                  x1={ax}
-                  y1={ay}
-                  x2={bx}
-                  y2={by}
-                  stroke={style.stroke}
-                  strokeDasharray={style.strokeDasharray}
-                  strokeWidth={style.width}
-                  opacity={style.opacity}
+              const ax = a.x + a.width / 2
+              const ay = a.y + a.height / 2
+              const bx = b.x + b.width / 2
+              const by = b.y + b.height / 2
+              const label = edge.labels.slice(0, 2).join(', ')
+
+              return (
+                <g key={edge.id}>
+                  <line
+                    x1={ax}
+                    y1={ay}
+                    x2={bx}
+                    y2={by}
+                    stroke="#6ea8fe"
+                    strokeWidth={Math.min(4, Math.max(2, edge.strength))}
+                    opacity={0.85}
+                  />
+
+                  {label && (
+                    <text
+                      x={(ax + bx) / 2}
+                      y={(ay + by) / 2 - 6}
+                      fill="#cbd5e1"
+                      fontSize="11"
+                      textAnchor="middle"
+                    >
+                      {label}
+                    </text>
+                  )}
+                </g>
+              )
+            })}
+          </svg>
+
+          {blocks.map((block) => {
+            const selected = selectedBlockIds.includes(block.id)
+            const hub = isNetHub(block)
+
+            if (hub) {
+              return (
+                <div
+                  key={block.id}
+                  title={block.memberComponentIds.join(', ')}
+                  style={{
+                    position: 'absolute',
+                    left: block.x,
+                    top: block.y,
+                    width: block.width,
+                    height: block.height,
+                    borderRadius: 999,
+                    background: '#facc15',
+                    border: '2px solid #eab308',
+                    boxShadow: '0 0 10px rgba(250,204,21,0.45)',
+                  }}
                 />
+              )
+            }
 
-                {label && (
-                  <text
-                    x={(ax + bx) / 2}
-                    y={(ay + by) / 2 - 6}
-                    fill="#cbd5e1"
-                    fontSize="11"
-                    textAnchor="middle"
-                  >
-                    {label}
-                  </text>
-                )}
-              </g>
-            )
-          })}
-        </svg>
-
-        {blocks.map((block) => {
-          const selected = selectedBlockIds.includes(block.id)
-          const hub = isNetHub(block)
-
-          if (hub) {
             return (
               <div
                 key={block.id}
-                title={block.title}
+                onMouseDown={(e) => onMouseDownBlock(e, block)}
+                onDoubleClick={(e) => {
+                  e.stopPropagation()
+                  onOpenBlock?.(block.id)
+                }}
+                title={block.memberComponentIds.join(', ')}
                 style={{
                   position: 'absolute',
-                  left: block.x + block.width / 2 - 6,
-                  top: block.y + block.height / 2 - 6,
-                  width: 12,
-                  height: 12,
-                  borderRadius: 999,
-                  background: '#fbbf24',
-                  border: '2px solid #1e1e1e',
-                  pointerEvents: 'none',
-                  boxShadow: '0 0 0 2px rgba(251,191,36,0.2)',
+                  left: block.x,
+                  top: block.y,
+                  width: block.width,
+                  height: block.height,
+                  borderRadius: 14,
+                  background: '#252526',
+                  border: selected ? '2px solid #ffffff' : `2px solid ${block.color}`,
+                  boxShadow: selected
+                    ? '0 0 0 3px rgba(255,255,255,0.18)'
+                    : '0 8px 22px rgba(0,0,0,0.25)',
+                  color: '#f1f5f9',
+                  cursor: 'move',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  textAlign: 'center',
+                  padding: '10px 12px',
+                  userSelect: 'none',
                 }}
-              />
+              >
+                <div
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 800,
+                    color: '#fff',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    width: '100%',
+                    textAlign: 'center',
+                  }}
+                >
+                  <span
+                    contentEditable
+                    suppressContentEditableWarning
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                    onBlur={(e) => {
+                      const next = e.currentTarget.textContent?.trim()
+
+                      if (next && next !== block.title) {
+                        onRenameBlock?.(block.id, next)
+                      }
+                    }}
+                    style={{
+                      outline: 'none',
+                      cursor: 'text',
+                      textAlign: 'center',
+                      width: '100%',
+                      display: 'inline-block',
+                    }}
+                  >
+                    {block.title}
+                  </span>
+                </div>
+
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: '#a3a3a3',
+                    marginTop: 5,
+                    lineHeight: 1.25,
+                    width: '100%',
+                    textAlign: 'center',
+                  }}
+                >
+                  {block.subtitle || block.kind}
+                </div>
+              </div>
             )
-          }
-
-          return (
-            <div
-              key={block.id}
-              onMouseDown={(e) => onMouseDownBlock(e, block)}
-              onDoubleClick={(e) => {
-                e.stopPropagation()
-                onOpenBlock?.(block.id)
-              }}
-              title={block.memberComponentIds.join(', ')}
-              style={{
-                position: 'absolute',
-                left: block.x,
-                top: block.y,
-                width: block.width,
-                height: block.height,
-                borderRadius: 14,
-                background:
-                  block.layer === 'block'
-                    ? '#252526'
-                    : block.layer === 'subcircuit'
-                      ? '#1f2937'
-                      : '#1f242d',
-                border: selected ? '2px solid #ffffff' : `2px solid ${block.color}`,
-                boxShadow: selected
-                  ? '0 0 0 3px rgba(255,255,255,0.18)'
-                  : '0 8px 22px rgba(0,0,0,0.25)',
-                color: '#f1f5f9',
-                cursor: onOpenBlock ? 'pointer' : 'move',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'center',
-                padding: '10px 12px',
-                userSelect: 'none',
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 14,
-                  fontWeight: 800,
-                  color: '#fff',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}
-              >
-                {block.title}
-              </div>
-
-              <div
-                style={{
-                  fontSize: 11,
-                  color: '#a3a3a3',
-                  marginTop: 5,
-                  lineHeight: 1.25,
-                }}
-              >
-                {`${block.layer} • ${block.subtitle || block.kind}`}
-              </div>
-            </div>
-          )
-        })}
-      </div>
+          })}
+        </div>
       </div>
     </div>
   )

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState, useRef } from 'react'
 import { useEditorStore } from '../store/editorStore'
 import { buildRawBlockGraph } from '../lib/parts/blockDiagramConverter'
 import {
@@ -16,24 +16,44 @@ import type { BlockDiagramState } from '../types/blockDiagram'
 export const BlockDiagramEditorPage: React.FC = () => {
   const placedComponents = useEditorStore((state) => state.placedComponents)
   const wires = useEditorStore((state) => state.wires)
-  const setActiveFilePath = useEditorStore((state) => state.setActiveFilePath)
 
   const rawGraph = useMemo(
     () => buildRawBlockGraph(placedComponents, wires),
     [placedComponents, wires],
   )
 
+  const setActiveFilePath = useEditorStore((state) => state.setActiveFilePath)
+
   const [diagram, setDiagram] = useState<BlockDiagramState>(() =>
     createInitialDiagramState(rawGraph.rawBlocks, rawGraph.rawEdges),
   )
-  const [showHierarchy, setShowHierarchy] = useState(false)
+
+  const TITLE_STORAGE_KEY = 'blockDiagramTitleOverrides:v1'
+
+const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(TITLE_STORAGE_KEY) || '{}')
+    } catch {
+      return {}
+    }
+  })
+
+  const titleOverridesRef = useRef(titleOverrides)
+
+  useEffect(() => {
+    titleOverridesRef.current = titleOverrides
+    localStorage.setItem(TITLE_STORAGE_KEY, JSON.stringify(titleOverrides))
+  }, [titleOverrides])
 
   useEffect(() => {
     const next = createInitialDiagramState(rawGraph.rawBlocks, rawGraph.rawEdges)
 
     setDiagram({
       ...next,
-      blocks: autoLayoutDiagram(next.blocks, next.edges),
+      blocks: autoLayoutDiagram(next.blocks, next.edges).map((block) => ({
+        ...block,
+        title: titleOverridesRef.current[block.id] || block.title,
+      })),
     })
   }, [rawGraph])
 
@@ -102,23 +122,6 @@ export const BlockDiagramEditorPage: React.FC = () => {
     })
   }
 
-  const onRename = () => {
-    if (diagram.selectedBlockIds.length !== 1) return
-
-    const blockId = diagram.selectedBlockIds[0]
-    const current = diagram.blocks.find((block) => block.id === blockId)
-
-    if (!current) return
-
-    const nextTitle = window.prompt('Rename block', current.title)
-    if (!nextTitle) return
-
-    setDiagram((prev) => ({
-      ...prev,
-      blocks: renameDiagramBlock(prev.blocks, blockId, nextTitle),
-    }))
-  }
-
   const onAutoLayout = () => {
     setDiagram((prev) => ({
       ...prev,
@@ -131,7 +134,10 @@ export const BlockDiagramEditorPage: React.FC = () => {
 
     setDiagram({
       ...next,
-      blocks: autoLayoutDiagram(next.blocks, next.edges),
+      blocks: autoLayoutDiagram(next.blocks, next.edges).map((block) => ({
+        ...block,
+        title: titleOverridesRef.current[block.id] || block.title,
+      })),
     })
   }
 
@@ -143,8 +149,8 @@ export const BlockDiagramEditorPage: React.FC = () => {
   }
 
   const visibleBlocks = useMemo(
-    () => (showHierarchy ? diagram.blocks : diagram.blocks.filter((block) => block.layer === 'block')),
-    [diagram.blocks, showHierarchy],
+    () => diagram.blocks.filter((block) => block.layer === 'block'),
+    [diagram.blocks],
   )
 
   const visibleBlockIds = useMemo(
@@ -168,15 +174,17 @@ export const BlockDiagramEditorPage: React.FC = () => {
   )
 
   const onOpenBlock = (blockId: string) => {
-    const block = diagram.blocks.find((candidate) => candidate.id === blockId)
+    const block = diagram.blocks.find((b) => b.id === blockId)
     if (!block) return
 
     const subcircuitComponent = placedComponents.find((component) =>
-      block.memberComponentIds.includes(component.id) && component.catalogId === 'subcircuit-instance',
+      block.memberComponentIds.includes(component.id) &&
+      component.catalogId === 'subcircuit-instance'
     )
 
     const subcircuitPath =
-      subcircuitComponent?.props?.subcircuitPath || subcircuitComponent?.props?.filePath
+      subcircuitComponent?.props?.subcircuitPath ||
+      subcircuitComponent?.props?.filePath
 
     if (typeof subcircuitPath === 'string' && subcircuitPath) {
       setActiveFilePath(subcircuitPath)
@@ -203,7 +211,7 @@ export const BlockDiagramEditorPage: React.FC = () => {
           </div>
 
           <div style={{ color: '#999', fontSize: 11, marginTop: 2 }}>
-            {diagram.blocks.length} visible blocks • {diagram.edges.length} visible edges •{' '}
+            {visibleBlocks.length} visible blocks • {visibleEdges.length} visible edges •{' '}
             {rawGraph.rawBlocks.length} raw blocks • {rawGraph.rawNets.length} electrical nets
           </div>
         </div>
@@ -228,20 +236,12 @@ export const BlockDiagramEditorPage: React.FC = () => {
             Ungroup
           </button>
 
-          <button style={btnStyle} onClick={onRename} disabled={diagram.selectedBlockIds.length !== 1}>
-            Rename
-          </button>
-
           <button style={btnStyle} onClick={onRebuildEdges}>
             Rebuild edges
           </button>
 
           <button style={btnStyle} onClick={onResetFromSchematic}>
             Reset from schematic
-          </button>
-
-          <button style={btnStyle} onClick={() => setShowHierarchy((value) => !value)}>
-            {showHierarchy ? 'Hide hierarchy' : 'Show hierarchy'}
           </button>
         </div>
       </div>
@@ -252,6 +252,17 @@ export const BlockDiagramEditorPage: React.FC = () => {
         selectedBlockIds={visibleSelectedBlockIds}
         onSelectBlock={onSelectBlock}
         onMoveBlock={onMoveBlock}
+        onRenameBlock={(blockId, title) => {
+          setTitleOverrides((prev) => ({
+            ...prev,
+            [blockId]: title,
+          }))
+
+          setDiagram((prev) => ({
+            ...prev,
+            blocks: renameDiagramBlock(prev.blocks, blockId, title),
+          }))
+        }}
         onOpenBlock={onOpenBlock}
       />
 
