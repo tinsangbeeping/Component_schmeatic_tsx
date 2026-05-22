@@ -33,7 +33,7 @@ export type TscircuitSymbolPrimitive =
         radius: number
         startAngleDegrees: number
         endAngleDegrees: number
-        direction: 'clockwise' | 'counterclockwise'
+        direction?: 'clockwise' | 'counterclockwise'
       }
     }
   | {
@@ -88,7 +88,7 @@ export const symbolShapeToTscircuitPrimitive = (shape: SymbolShape): TscircuitSy
         radius: shape.radius,
         startAngleDegrees: shape.startAngle,
         endAngleDegrees: shape.endAngle,
-        direction: shape.direction ?? 'clockwise'
+        direction: shape.direction
       }
     }
   }
@@ -160,13 +160,17 @@ export const tscircuitArcToSymbolArc = (input: {
   direction?: unknown
 }) => {
   const rawDirection = String(input.direction || '').toLowerCase()
-  const direction: 'clockwise' | 'counterclockwise' = rawDirection === 'counterclockwise' ? 'counterclockwise' : 'clockwise'
+  const direction: 'clockwise' | 'counterclockwise' | undefined = rawDirection === 'clockwise' || rawDirection === 'counterclockwise'
+    ? rawDirection
+    : undefined
+  const start = toFinite(input.startAngle ?? input.startAngleDegrees)
+  const end = toFinite(input.endAngle ?? input.endAngleDegrees)
   return {
     cx: toFinite(input.cx ?? input.center?.x ?? input.x),
     cy: toFinite(input.cy ?? input.center?.y ?? input.y),
     radius: Math.abs(toFinite(input.radius)),
-    startAngle: toFinite(input.startAngle ?? input.startAngleDegrees),
-    endAngle: toFinite(input.endAngle ?? input.endAngleDegrees),
+    startAngle: start,
+    endAngle: end,
     direction
   }
 }

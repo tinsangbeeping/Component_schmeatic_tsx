@@ -52,6 +52,8 @@ function App() {
   const [leftPanelTab, setLeftPanelTab] = useState<LeftTab>('files')
   const [editingWsId, setEditingWsId] = useState<string | null>(null)
   const [editingWsName, setEditingWsName] = useState('')
+  const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false)
+  const [newWorkspaceName, setNewWorkspaceName] = useState('')
   const [symbolToolMode, setSymbolToolMode] = useState<SymbolToolMode>('select')
   const [symbolSelection, setSymbolSelection] = useState<SymbolSelection>(null)
   const [symbolEditorView, setSymbolEditorView] = useState<'canvas' | 'json'>('canvas')
@@ -157,6 +159,23 @@ function App() {
     }
     setEditingWsId(null)
     setEditingWsName('')
+  }
+
+  const startCreateWorkspace = () => {
+    setNewWorkspaceName(`Workspace ${Object.keys(workspaces).length + 1}`)
+    setIsCreatingWorkspace(true)
+  }
+
+  const finishCreateWorkspace = () => {
+    const name = newWorkspaceName.trim()
+    if (!name) {
+      setIsCreatingWorkspace(false)
+      setNewWorkspaceName('')
+      return
+    }
+    createWorkspace(name)
+    setIsCreatingWorkspace(false)
+    setNewWorkspaceName('')
   }
 
   const createNewSchematicFile = () => {
@@ -387,12 +406,38 @@ function App() {
                   <span style={{ color: '#ccc', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1 }}>Workspaces</span>
                   <button
                     style={{ background: '#007acc', border: 'none', color: '#fff', borderRadius: 3, padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}
-                    onClick={() => {
-                      const name = prompt('New workspace name:')
-                      if (name?.trim()) createWorkspace(name.trim())
-                    }}
+                    onClick={startCreateWorkspace}
                   >+ New</button>
                 </div>
+                {isCreatingWorkspace && (
+                  <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                    <input
+                      autoFocus
+                      value={newWorkspaceName}
+                      onChange={e => setNewWorkspaceName(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') finishCreateWorkspace()
+                        if (e.key === 'Escape') {
+                          setIsCreatingWorkspace(false)
+                          setNewWorkspaceName('')
+                        }
+                      }}
+                      placeholder="Workspace name"
+                      style={{ flex: 1, background: '#333', border: '1px solid #007acc', color: '#fff', borderRadius: 3, padding: '4px 6px', fontSize: 12 }}
+                    />
+                    <button
+                      style={{ background: '#007acc', border: 'none', color: '#fff', borderRadius: 3, padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}
+                      onClick={finishCreateWorkspace}
+                    >Add</button>
+                    <button
+                      style={{ background: '#555', border: 'none', color: '#fff', borderRadius: 3, padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}
+                      onClick={() => {
+                        setIsCreatingWorkspace(false)
+                        setNewWorkspaceName('')
+                      }}
+                    >Cancel</button>
+                  </div>
+                )}
                 {Object.values(workspaces).map(ws => (
                   <div
                     key={ws.id}

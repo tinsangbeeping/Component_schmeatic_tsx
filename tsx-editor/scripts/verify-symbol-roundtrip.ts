@@ -16,6 +16,10 @@ const extractSingleTag = (tsx: string, tagName: string): string => {
   return tag
 }
 
+const extractTags = (tsx: string, tagName: string): string[] => {
+  return [...tsx.matchAll(new RegExp(`<${tagName}\\b[^>]*\\/>`, 'g'))].map(match => match[0])
+}
+
 const parseNumericAttr = (tag: string, attr: string): number => {
   const value = tag.match(new RegExp(`${attr}\\s*=\\s*\\{([^}]+)\\}`))?.[1]?.trim()
   if (!value || !/^-?\d+(?:\.\d+)?$/.test(value)) {
@@ -91,9 +95,9 @@ const run = () => {
     { id: 'text-1', kind: 'schematictext', x: 14, y: 108, text: 'ASYM' }
   ]
   symbolDoc.ports = [
-    { id: 'p-left', name: 'VIN', side: 'left', x: 0, y: 36, electricalDirection: 'input' },
-    { id: 'p-right', name: 'VOUT', side: 'right', x: 160, y: 64, electricalDirection: 'output' },
-    { id: 'p-top', name: 'EN', side: 'top', x: 90, y: 0, electricalDirection: 'input' }
+    { id: 'p-left', name: 'VIN', side: 'left', schX: 0, schY: 36, electricalDirection: 'input' },
+    { id: 'p-right', name: 'VOUT', side: 'right', schX: 160, schY: 64, electricalDirection: 'output' },
+    { id: 'p-top', name: 'EN', side: 'top', schX: 90, schY: 0, electricalDirection: 'input' }
   ]
 
   const generatedTsx = generateSymbolTsx(symbolDoc)
@@ -101,7 +105,7 @@ const run = () => {
   assert(generatedTsx.includes('<schematicline x1={10} y1={100} x2={120} y2={86} />'), 'exported TSX must flip schematicline Y coordinates into tscircuit space')
   assert(generatedTsx.includes('<schematicrect schX={70} schY={45} width={46} height={18} />'), 'exported TSX must preserve rect center while flipping Y into tscircuit space')
   assert(generatedTsx.includes('<schematiccircle center={{x: 120, y: 84}} radius={20} />'), 'exported TSX must use circle center/radius props in tscircuit Y space')
-  assert(generatedTsx.includes('<schematicarc center={{x: 84, y: 64}} radius={12} startAngleDegrees={0} endAngleDegrees={180} direction="clockwise" />'), 'exported TSX must preserve arc angles while flipping only arc center Y into tscircuit space')
+  assert(generatedTsx.includes('<schematicarc center={{x: 84, y: 64}} radius={12} startAngleDegrees={0} endAngleDegrees={180} direction="clockwise" />'), 'exported TSX must preserve declared tscircuit arc angles/direction')
   assert(generatedTsx.includes('<port name="VIN" direction="left" side="left" order={0} schX={0} schY={84} />'), 'exported TSX must use official port schX/schY props in flipped Y space')
   assert(generatedTsx.includes('<port name="VIN"'), 'exported TSX should include ports')
 
@@ -192,7 +196,7 @@ const run = () => {
     { id: 'arc-quarter', kind: 'schematicarc', cx: 50, cy: 30, radius: 17, startAngle: 180, endAngle: 270, direction: 'clockwise' }
   ]
   const quarterArcTsx = generateSymbolTsx(quarterArcDoc)
-  assert(quarterArcTsx.includes('<schematicarc center={{x: 50, y: 50}} radius={17} startAngleDegrees={180} endAngleDegrees={270} direction="clockwise" />'), 'C: top-left quarter arc must preserve local arc angles in exported TSX')
+  assert(quarterArcTsx.includes('<schematicarc center={{x: 50, y: 50}} radius={17} startAngleDegrees={180} endAngleDegrees={270} direction="clockwise" />'), 'C: top-left quarter arc must export declared tscircuit angles/direction literally')
   const reimportedQuarterArc = importSymbolTsxToDocument(quarterArcTsx, 'quarterArc')
   const quarterArcRoundtrip = reimportedQuarterArc.shapes.find(shape => shape.kind === 'schematicarc') as any
   assert(quarterArcRoundtrip.startAngle === 180, 'C: quarter arc startAngle changed during roundtrip')
@@ -200,11 +204,13 @@ const run = () => {
   assert(quarterArcRoundtrip.direction === 'clockwise', 'C: quarter arc must default to clockwise drawing')
 
   const implicitDirectionQuarterArc = importSymbolTsxToDocument(
-    quarterArcTsx.replace(' direction="clockwise"', ''),
+    quarterArcTsx.replace(/\s+direction="(?:clockwise|counterclockwise)"/, ''),
     'quarterArcNoDirection'
   )
   const implicitDirectionArc = implicitDirectionQuarterArc.shapes.find(shape => shape.kind === 'schematicarc') as any
-  assert(implicitDirectionArc.direction === 'clockwise', 'C: imported arcs without direction must default to clockwise')
+  assert(implicitDirectionArc.direction === undefined, 'C: imported arcs without direction must preserve implicit tscircuit direction')
+  const implicitDirectionTsx = generateSymbolTsx(implicitDirectionQuarterArc)
+  assert(!extractSingleTag(implicitDirectionTsx, 'schematicarc').includes('direction='), 'C: implicit arc direction must not be exported as an explicit direction')
 
   const angledArcDoc = createSymbolDocument('angledArc')
   angledArcDoc.width = 120
@@ -213,11 +219,53 @@ const run = () => {
     { id: 'arc-angled', kind: 'schematicarc', cx: 60, cy: 40, radius: 16, startAngle: 90, endAngle: 210, direction: 'clockwise' }
   ]
   const angledArcTsx = generateSymbolTsx(angledArcDoc)
-  assert(angledArcTsx.includes('<schematicarc center={{x: 60, y: 40}} radius={16} startAngleDegrees={90} endAngleDegrees={210} direction="clockwise" />'), 'C: 90-210 clockwise arc must preserve its angles in exported TSX')
+  assert(angledArcTsx.includes('<schematicarc center={{x: 60, y: 40}} radius={16} startAngleDegrees={90} endAngleDegrees={210} direction="clockwise" />'), 'C: 90-210 clockwise arc must export declared tscircuit angles/direction literally')
   const reimportedAngledArc = importSymbolTsxToDocument(angledArcTsx, 'angledArc')
   const angledArcRoundtrip = reimportedAngledArc.shapes.find(shape => shape.kind === 'schematicarc') as any
   assert(angledArcRoundtrip.startAngle === 90, 'C: angled arc startAngle changed during roundtrip')
   assert(angledArcRoundtrip.endAngle === 210, 'C: angled arc endAngle changed during roundtrip')
+
+  const arcFixtureCases = [
+    { startAngle: 0, endAngle: 30, radius: 1 },
+    { startAngle: 0, endAngle: 60, radius: 2 },
+    { startAngle: 0, endAngle: 90, radius: 3 },
+    { startAngle: 0, endAngle: 330, radius: 11 }
+  ]
+  ;(['clockwise', 'counterclockwise'] as const).forEach((direction, directionIndex) => {
+    const fixtureDoc = createSymbolDocument(`arcFixture${direction}`)
+    fixtureDoc.width = 160
+    fixtureDoc.height = 80
+    fixtureDoc.shapes = arcFixtureCases.map((arcCase, index) => ({
+      id: `${direction}-arc-${index}`,
+      kind: 'schematicarc',
+      cx: 20 + index * 34,
+      cy: 24 + directionIndex * 28,
+      radius: arcCase.radius,
+      startAngle: arcCase.startAngle,
+      endAngle: arcCase.endAngle,
+      direction
+    }))
+
+    const fixtureTsx = generateSymbolTsx(fixtureDoc)
+    const arcTags = extractTags(fixtureTsx, 'schematicarc')
+    assert(arcTags.length === arcFixtureCases.length, `C: ${direction} arc fixture should export all requested arcs`)
+    arcTags.forEach((tag, index) => {
+      const parsed = schematicArcProps.parse({
+        center: parseCenterAttr(tag),
+        radius: parseNumericAttr(tag, 'radius'),
+        startAngleDegrees: parseNumericAttr(tag, 'startAngleDegrees'),
+        endAngleDegrees: parseNumericAttr(tag, 'endAngleDegrees'),
+        direction: tag.match(/direction\s*=\s*"([^"]+)"/)?.[1]
+      })
+      assert(parsed.radius === arcFixtureCases[index].radius, `C: ${direction} arc fixture radius mismatch`)
+      assert(parsed.startAngleDegrees === arcFixtureCases[index].startAngle, `C: ${direction} arc fixture exported start angle mismatch`)
+      assert(parsed.endAngleDegrees === arcFixtureCases[index].endAngle, `C: ${direction} arc fixture exported end angle mismatch`)
+      assert(parsed.direction === direction, `C: ${direction} arc fixture exported direction mismatch`)
+    })
+
+    const roundtrip = importSymbolTsxToDocument(fixtureTsx, `arcFixture${direction}`)
+    assert(roundtrip.shapes.filter(shape => shape.kind === 'schematicarc').length === arcFixtureCases.length, `C: ${direction} arc fixture roundtrip should preserve all arcs`)
+  })
 
   // D: EFR32PowerChip symbolRef/port-side behavior via registry.
   const efrDoc = createSymbolDocument('EFR32PowerChip')
@@ -227,10 +275,10 @@ const run = () => {
     { id: 'efr-body', kind: 'schematicrect', cx: 100, cy: 60, width: 120, height: 70 }
   ]
   efrDoc.ports = [
-    { id: 'efr-left-1', name: 'VREGVDD', side: 'left', x: 0, y: 28, electricalDirection: 'input' },
-    { id: 'efr-left-2', name: 'AVDD', side: 'left', x: 0, y: 84, electricalDirection: 'input' },
-    { id: 'efr-right-1', name: 'DVDD', side: 'right', x: 200, y: 30, electricalDirection: 'output' },
-    { id: 'efr-right-2', name: 'DECOUPLE', side: 'right', x: 200, y: 88, electricalDirection: 'passive' }
+    { id: 'efr-left-1', name: 'VREGVDD', side: 'left', schX: 0, schY: 28, electricalDirection: 'input' },
+    { id: 'efr-left-2', name: 'AVDD', side: 'left', schX: 0, schY: 84, electricalDirection: 'input' },
+    { id: 'efr-right-1', name: 'DVDD', side: 'right', schX: 200, schY: 30, electricalDirection: 'output' },
+    { id: 'efr-right-2', name: 'DECOUPLE', side: 'right', schX: 200, schY: 88, electricalDirection: 'passive' }
   ]
 
   const fsMapD: FSMap = {
@@ -251,8 +299,8 @@ const run = () => {
   const rightPorts = (resolved?.ports || []).filter(port => port.side === 'right')
   assert(leftPorts.length >= 1, 'D: expected at least one left-side port')
   assert(rightPorts.length >= 1, 'D: expected at least one right-side port')
-  assert(leftPorts.every(port => port.x === 0), 'D: expected left ports to snap to x=0')
-  assert(rightPorts.every(port => port.x === (resolved?.width || 200)), 'D: expected right ports to snap to x=width')
+  assert(leftPorts.every(port => port.schX === 0), 'D: expected left ports to snap to schX=0')
+  assert(rightPorts.every(port => port.schX === (resolved?.width || 200)), 'D: expected right ports to snap to schX=width')
 
   const importedLegacy = importSymbolTsxToDocument(`export default function EFR32Power() {
   return (
@@ -270,8 +318,8 @@ const run = () => {
 }
 `, 'EFR32Power')
   const importedRight = importedLegacy.ports.filter(port => port.side === 'right')
-  assert(importedLegacy.ports.every(port => port.x === 0 || port.x === importedLegacy.width || port.y === 0 || port.y === importedLegacy.height), 'D: imported ports should snap to symbol edges')
-  assert(new Set(importedRight.map(port => port.y)).size === importedRight.length, 'D: imported right-side ports should be vertically separated')
+  assert(importedLegacy.ports.every(port => port.schX === 0 || port.schX === importedLegacy.width || port.schY === 0 || port.schY === importedLegacy.height), 'D: imported ports should snap to symbol edges')
+  assert(new Set(importedRight.map(port => port.schY)).size === importedRight.length, 'D: imported right-side ports should be vertically separated')
 
   console.log('PASS A: Symbol Maker geometry is preserved for placed symbol extraction path')
   console.log('PASS B: Missing symbol geometry is detectable via unresolved symbolRef')

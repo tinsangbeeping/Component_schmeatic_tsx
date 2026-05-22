@@ -100,7 +100,7 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart, embedde
     e: React.DragEvent,
     symbolName: string,
     symbolPath: string,
-    ports: Array<{ name: string; x: number; y: number }>,
+    ports: Array<{ name: string; schX: number; schY: number }>,
     geometry?: {
       width: number
       height: number

@@ -29,12 +29,12 @@ const nextShapeId = (() => {
 const toArcPath = (shape: Extract<SymbolShape, { kind: 'schematicarc' }>): string => {
   const startPoint = getArcEndpoint(shape.cx, shape.cy, shape.radius, shape.startAngle)
   const endPoint = getArcEndpoint(shape.cx, shape.cy, shape.radius, shape.endAngle)
-  const direction = shape.direction ?? 'clockwise'
+  const direction = shape.direction ?? 'counterclockwise'
   const delta = direction === 'counterclockwise'
     ? ((shape.startAngle - shape.endAngle) % 360 + 360) % 360
     : ((shape.endAngle - shape.startAngle) % 360 + 360) % 360
   const largeArc = delta > 180 ? 1 : 0
-  const sweepFlag = direction === 'counterclockwise' ? 0 : 1
+  const sweepFlag = direction === 'counterclockwise' ? 1 : 0
   return `M ${startPoint.x} ${startPoint.y} A ${shape.radius} ${shape.radius} 0 ${largeArc} ${sweepFlag} ${endPoint.x} ${endPoint.y}`
 }
 
@@ -232,8 +232,8 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
           electricalDirection: normalizedDirection,
           side: inferredSide,
           order: existingSideOrder,
-          x: snapped.x,
-          y: snapped.y
+          schX: snapped.x,
+          schY: snapped.y
         }]
       }
       onDocumentChange(nextDoc)
@@ -308,10 +308,10 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
       }
 
       const selectedPort = [...document.ports].reverse().find(port => intersects({
-        minX: port.x - 4,
-        maxX: port.x + 4,
-        minY: port.y - 4,
-        maxY: port.y + 4
+        minX: port.schX - 4,
+        maxX: port.schX + 4,
+        minY: port.schY - 4,
+        maxY: port.schY + 4
       }))
 
       const selectedShapeIds = document.shapes
@@ -319,10 +319,10 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
         .map(shape => shape.id)
       const selectedPortIds = document.ports
         .filter(port => intersects({
-          minX: port.x - 4,
-          maxX: port.x + 4,
-          minY: port.y - 4,
-          maxY: port.y + 4
+          minX: port.schX - 4,
+          maxX: port.schX + 4,
+          minY: port.schY - 4,
+          maxY: port.schY + 4
         }))
         .map(port => port.id)
 
@@ -676,9 +676,9 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
                   onToolModeChange('select')
                 }}
               >
-                <circle cx={port.x} cy={port.y} r={2.6} stroke={color} fill="none" strokeWidth={1.3} />
-                <line x1={port.x - 7} y1={port.y} x2={port.x + 7} y2={port.y} stroke={color} strokeWidth={1.2} />
-                <text x={port.x + 4} y={port.y - 4} fill={color} fontSize={7}>{port.name}</text>
+                <circle cx={port.schX} cy={port.schY} r={2.6} stroke={color} fill="none" strokeWidth={1.3} />
+                <line x1={port.schX - 7} y1={port.schY} x2={port.schX + 7} y2={port.schY} stroke={color} strokeWidth={1.2} />
+                <text x={port.schX + 4} y={port.schY - 4} fill={color} fontSize={7}>{port.name}</text>
               </g>
             )
           })}

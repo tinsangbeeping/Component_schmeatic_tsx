@@ -175,6 +175,28 @@ export function EFR_t1(props: { name: string; schX?: number; schY?: number }) {
   assert(parsedMain.wires.length > 0, 'main schematic parse should produce wires')
   assert(parsedSub.components.some(c => c.name === 'R1'), 'subcircuit parse should include R1')
 
+  const visualOnlySchematic = `export default () => (
+  <board width="50mm" height="50mm">
+    <net name="GND" role="ground" scope="global" />
+    <netlabel net="GND" schX={10} schY={10} />
+    <netlabel net="GND" schX={40} schY={10} />
+    <schematicline x1={0} y1={0} x2={10} y2={0} />
+    <schematicarc center={{ x: 10, y: 10 }} radius={5} startAngleDegrees={0} endAngleDegrees={90} direction="clockwise" />
+  </board>
+)`
+  const visualOnlyParsed = minimalImportExportTestUtils.parseImportedTSXToCanvas(visualOnlySchematic, SCHEMATIC_MAIN)
+  const visualOnlyExport = minimalImportExportTestUtils.exportCanvasToTSX(
+    SCHEMATIC_MAIN,
+    visualOnlyParsed.components,
+    visualOnlyParsed.wires
+  )
+  assert(visualOnlyParsed.wires.length === 0, 'visual-only net labels and primitives must not create electrical wires')
+  assert((visualOnlyExport.match(/<net name="GND"/g) || []).length === 1, 'repeated GND labels should export one invisible electrical net')
+  assert((visualOnlyExport.match(/<netlabel net="GND"/g) || []).length === 2, 'repeated GND labels should remain separate visual labels')
+  assert(!visualOnlyExport.includes('<trace'), 'visual-only labels/primitives must not export traces')
+  assert(visualOnlyExport.includes('<schematicline'), 'schematicline should be preserved as visual layout')
+  assert(visualOnlyExport.includes('<schematicarc'), 'schematicarc should be preserved as visual layout')
+
   // Standalone single-file imports should normalize safely.
   const standaloneSubcircuitFile = `import React from "react"
 
@@ -485,6 +507,14 @@ export default () => (
   const extractedZipFiles = await extractBatchFilesFromZip(await zip.generateAsync({ type: 'uint8array' }))
   assert(extractedZipFiles.length === 2, 'zip import should extract importable project files')
   assert(extractedZipFiles.some(file => file.fileName.endsWith('ZipBlock.tsx')), 'zip import should preserve relative project paths')
+
+  const packageRootZip = new JSZip()
+  packageRootZip.file('wrapper/ignore/Outside.tsx', `export default () => <board />`)
+  packageRootZip.file('wrapper/project/package.json', JSON.stringify({ name: 'package-root-project' }))
+  packageRootZip.file('wrapper/project/src/ShouldStay.tsx', `export default () => <board />`)
+  const packageRootZipFiles = await extractBatchFilesFromZip(await packageRootZip.generateAsync({ type: 'uint8array' }))
+  assert(packageRootZipFiles.length === 1, 'zip import should only load files below the folder containing package.json')
+  assert(packageRootZipFiles[0].fileName === 'src/ShouldStay.tsx', 'zip import should strip the package.json folder as the selected project root')
 
   const brokenFsMap = createDefaultWorkspaceFsMap('Broken Import WS')
   brokenFsMap['schematics/Broken.tsx'] = `import { MissingBlock } from "../subcircuits/MissingBlock"\n\nexport default () => <board><MissingBlock name="X1" /></board>`

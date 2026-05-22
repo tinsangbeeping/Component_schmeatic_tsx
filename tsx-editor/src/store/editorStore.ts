@@ -904,7 +904,7 @@ const mergeNetRoles = (a: NetRole, b: NetRole): NetRole => {
 }
 
 const roleFromNetComponent = (component: PlacedComponent): NetRole => {
-  const explicit = component.props.netRole as NetRole | undefined
+  const explicit = (component.props.role || component.props.netRole) as NetRole | undefined
   if (explicit && explicit !== 'unknown') return explicit
 
   if (component.catalogId === 'net') {
@@ -1614,9 +1614,13 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       }
     }
 
+    const isPrimitiveTag = SCHEMATIC_PRIMITIVE_CATALOG_IDS.has(tagName)
+
     if (!name) {
       if (tagName === 'netlabel') {
         name = `netlabel-${components.length + 1}`
+      } else if (isPrimitiveTag) {
+        name = `${tagName}-${components.length + 1}`
       } else if (tagName === 'sheet') {
         const fallbackSheetName = String(props.src || `Sheet${components.length + 1}`)
           .split('/')
@@ -1645,7 +1649,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     const isSheetReference = tagName === 'sheet'
     const isPublicPort = tagName === 'port'
     const effectiveCatalogId = isCustomChip ? 'customchip' : tagName
-    const isKnownPart = !isSheetReference && !isPublicPort && !!getCatalogItem(effectiveCatalogId)
+    const isKnownPart = !isPrimitiveTag && !isSheetReference && !isPublicPort && !!getCatalogItem(effectiveCatalogId)
     const id = `comp-${filePath}-${name}-${components.length}`
 
     const importedComponentPath = importedComponentPaths.get(tagName)
@@ -1694,8 +1698,8 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         || []
       props.symbolPorts = resolvedSymbolDefinition?.ports.map(port => ({
         name: port.name,
-        schX: Number(port.x || 0),
-        schY: Number(port.y || 0),
+        schX: Number(port.schX ?? (port as any).x ?? 0),
+        schY: Number(port.schY ?? (port as any).y ?? 0),
         side: (port as any).side ?? undefined,
         order: (port as any).order !== undefined ? Number((port as any).order) : undefined
       }))
@@ -1774,6 +1778,8 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         ? 'public-port'
         : isSheetReference
         ? 'sheet-instance'
+        : isPrimitiveTag
+        ? tagName
         : isKnownPart
         ? effectiveCatalogId
         : isSymbolReference
@@ -1821,7 +1827,11 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     if (component.catalogId !== 'net') return
     const netName = String(component.props.name || component.name || '').trim()
     if (!netName) return
-    const explicitRole: NetRole = component.props.isGround
+    const explicitRole: NetRole = component.props.role
+      ? (component.props.role as NetRole)
+      : component.props.netRole
+      ? (component.props.netRole as NetRole)
+      : component.props.isGround
       ? 'ground'
       : component.props.isForPower
       ? 'power'
@@ -1923,6 +1933,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         to: { componentId: netId, pinName: 'port' },
         ...(routePoints ? { routePoints } : {}),
         routingIntent: 'manual',
+        visualMode: routePoints ? 'wire' : 'hidden',
         tsxSnippet: ''
       })
       continue
@@ -1939,6 +1950,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         to: { componentId: toId, pinName: toRef.pinName },
         ...(routePoints ? { routePoints } : {}),
         routingIntent: 'manual',
+        visualMode: routePoints ? 'wire' : 'hidden',
         tsxSnippet: ''
       })
       continue
@@ -1960,6 +1972,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         to: { componentId: toId, pinName: 'port' },
         ...(routePoints ? { routePoints } : {}),
         routingIntent: 'manual',
+        visualMode: routePoints ? 'wire' : 'hidden',
         tsxSnippet: ''
       })
     }
@@ -1991,6 +2004,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         from: { componentId: component.id, pinName },
         to: { componentId: netComponentId, pinName: 'port' },
         routingIntent: 'manual',
+        visualMode: 'hidden',
         tsxSnippet: ''
       })
     })
@@ -2148,6 +2162,11 @@ const sanitizeComponentName = (name: string): string => name.trim().replace(/^\.
 
 const canonicalizeNetName = (value: string): string => value.trim().toUpperCase()
 
+const netRefName = (ref: string): string | null => {
+  const match = ref.match(/^net\.([A-Za-z_][A-Za-z0-9_]*)$/)
+  return match ? canonicalizeNetName(match[1]) : null
+}
+
 const inferCommonNetForPin = (label: string): string | null => {
   const normalized = label.trim().toLowerCase()
   if (!normalized) return null
@@ -2192,7 +2211,7 @@ const getAutoWireTargets = (component: PlacedComponent): Array<{ pinName: string
 }
 
 const getSelectablePinsForComponent = (component: PlacedComponent): string[] => {
-  if (component.catalogId === 'net' || component.catalogId === 'netport') {
+  if (component.catalogId === 'netport') {
     return ['port']
   }
 
@@ -2291,7 +2310,12 @@ const validateWireSelectorsForExport = (
       return
     }
 
-    if (component.catalogId === 'net' || component.catalogId === 'netport' || component.catalogId === 'netlabel' || component.catalogId === 'public-port') {
+    if (component.catalogId === 'netlabel' || isSymbolEditorPrimitiveComponent(component)) {
+      errors.push(`${filePath}: visual object .${component.name} cannot be used as an electrical endpoint`)
+      return
+    }
+
+    if (component.catalogId === 'net' || component.catalogId === 'netport' || component.catalogId === 'public-port') {
       if (endpoint.pinName !== 'port') {
         errors.push(`${filePath}: invalid net selector .${component.name} > .${endpoint.pinName}`)
       }
@@ -2411,6 +2435,14 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
   }
 
   const attrs = toAttrList(normalizedProps)
+  if (isSymbolEditorPrimitiveComponent(component)) {
+    return [
+      `<${tagName}`,
+      ...attrs.map(line => `  ${line}`),
+      '/>'
+    ].join('\n')
+  }
+
   const name = sanitizeComponentName(String(normalizedProps.name || component.name || ''))
   const x = pixelToSchematic(Number(normalizedProps.schX || 0))
   const y = pixelToSchematic(Number(normalizedProps.schY || 0))
@@ -2489,11 +2521,10 @@ const traceEndpointRef = (component: PlacedComponent | undefined, pinName: strin
       return `.${cleanInstanceName} > .${cleanPortName}`
     }
   }
-  // netlabel, netport, and net all resolve to net.NETNAME selector (named-net reference)
+  // netport and legacy net anchors resolve to net.NETNAME. Net labels are visual aliases only.
   if (
     component.catalogId === 'netport' ||
-    component.catalogId === 'net' ||
-    component.catalogId === 'netlabel'
+    component.catalogId === 'net'
   ) {
     const rawNetName = String(
       component.props.netName ||
@@ -2536,20 +2567,49 @@ const createGraphExportArtifacts = (
   netComments: string[]
 } => {
   const byId = new Map(components.map(component => [component.id, component]))
-
-  // Internal 'net' canvas markers provide named-net identity for the editor;
-  // they must NOT be emitted as JSX – tscircuit nets are implicit via trace selectors.
-  // We still collect net names for potential comment annotation only.
-  const _internalNetNames = components
-    .filter(component => component.catalogId === 'net')
-    .map(component => canonicalizeNetName(String(component.props.name || component.name || '')))
-    .filter(Boolean)
-    .filter((name, index, arr) => arr.indexOf(name) === index)
-    .sort((a, b) => a.localeCompare(b))
-  const netDeclarations: string[] = [] // never emit <net name="..." /> – not valid tscircuit JSX
-
   const traceSet = new Set<string>()
+  const netDeclarationsByName = new Map<string, { role?: string; scope?: string }>()
   const exportGraph: ExportGraph = { nodes: [] }
+
+  const addNetDeclaration = (rawName: string, role?: unknown, scope?: unknown) => {
+    const name = canonicalizeNetName(String(rawName || '').trim())
+    if (!name) return
+    const existing = netDeclarationsByName.get(name) || {}
+    const nextRole = String(role || existing.role || inferNetRole(name)).trim()
+    const nextScope = String(scope || existing.scope || '').trim()
+    netDeclarationsByName.set(name, {
+      ...(nextRole ? { role: nextRole } : {}),
+      ...(nextScope ? { scope: nextScope } : {})
+    })
+  }
+
+  components.forEach((component) => {
+    if (component.catalogId === 'net') {
+      addNetDeclaration(
+        String(component.props.name || component.name || ''),
+        component.props.role || component.props.netRole,
+        component.props.scope
+      )
+      return
+    }
+
+    if (component.catalogId === 'netport') {
+      addNetDeclaration(
+        String(component.props.netName || component.props.name || component.name || ''),
+        component.props.role || component.props.netRole,
+        component.props.scope
+      )
+      return
+    }
+
+    if (component.catalogId === 'netlabel' && component.props.internalHelper !== true) {
+      addNetDeclaration(
+        String(component.props.net || component.props.netName || component.name || ''),
+        component.props.role || component.props.netRole,
+        component.props.scope
+      )
+    }
+  })
 
   wires.forEach((wire) => {
     const fromComponent = byId.get(wire.from.componentId)
@@ -2559,15 +2619,18 @@ const createGraphExportArtifacts = (
     if (!fromRef || !toRef) return
     if (fromRef === toRef) return
 
-    // Avoid exporting abstract net-to-net edges that explode into unreadable netlist-style wiring.
-    if (fromRef.startsWith('net.') && toRef.startsWith('net.')) return
+    const fromNetName = netRefName(fromRef)
+    const toNetName = netRefName(toRef)
+    if (fromNetName) addNetDeclaration(fromNetName, fromComponent?.props.role || fromComponent?.props.netRole, fromComponent?.props.scope)
+    if (toNetName) addNetDeclaration(toNetName, toComponent?.props.role || toComponent?.props.netRole, toComponent?.props.scope)
 
     exportGraph.nodes.push({
       kind: 'trace',
       from: fromRef,
       to: toRef,
       routePoints: wire.routePoints,
-      routingIntent: wire.routingIntent
+      routingIntent: wire.routingIntent,
+      visualMode: wire.visualMode
     })
   })
 
@@ -2583,10 +2646,21 @@ const createGraphExportArtifacts = (
         net,
         schX: Number(component.props.schX),
         schY: Number(component.props.schY),
-        netRole: String(component.props.netRole || inferNetRole(net))
+        netRole: String(component.props.role || component.props.netRole || inferNetRole(net))
       })
     })
 
+  const netGraph: ExportGraph = {
+    nodes: [...netDeclarationsByName.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, meta]) => ({
+        kind: 'net',
+        name,
+        role: meta.role,
+        scope: meta.scope
+      }))
+  }
+  const netDeclarations = compileExportGraphToTSXNodes(netGraph)
   compileExportGraphToTSXNodes(exportGraph).forEach(snippet => traceSet.add(snippet))
 
   return {
@@ -2603,7 +2677,6 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
 
   const renderedComponents = components
     .filter(component => component.catalogId !== 'net' && component.catalogId !== 'netport' && component.catalogId !== 'netlabel')
-    .filter(component => !isSymbolEditorPrimitiveComponent(component))
     .map(component => createComponentSnippet(component, inSubcircuit, filePath))
     .filter(Boolean)
     .map(line => line.split('\n').map(inner => `    ${inner}`).join('\n'))
@@ -4337,10 +4410,6 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       getAutoWireTargets(component).forEach(({ pinName, netName }) => {
         const netRole = inferNetRole(netName)
         const powerStrategy = inferPowerDistributionStrategy(netName, netRole)
-        // Default policy: GND/VCC/DVDD use global labels, not giant auto buses.
-        if (powerStrategy === 'global-label') {
-          return
-        }
 
         const pinAlreadyConnected = nextWires.some(wire =>
           (wire.from.componentId === component.id && wire.from.pinName === pinName) ||
@@ -4356,11 +4425,38 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           Number(component.props.schY || 0)
         )
 
+        if (powerStrategy === 'global-label') {
+          const labelX = Number(component.props.schX || 0) + (netName === 'GND' ? -36 : 36)
+          const labelY = Number(component.props.schY || 0)
+          const labelExists = nextComponents.some(candidate =>
+            candidate.catalogId === 'netlabel' &&
+            canonicalizeNetName(String(candidate.props.net || candidate.props.netName || candidate.name || '')) === canonicalizeNetName(netName) &&
+            Math.abs(Number(candidate.props.schX || 0) - labelX) < 1 &&
+            Math.abs(Number(candidate.props.schY || 0) - labelY) < 1
+          )
+          if (!labelExists) {
+            nextComponents.push({
+              id: `netlabel-auto-${canonicalizeNetName(netName)}-${Date.now()}-${nextComponents.length}`,
+              catalogId: 'netlabel',
+              name: `netlabel-${canonicalizeNetName(netName)}`,
+              props: {
+                net: canonicalizeNetName(netName),
+                netRole,
+                schX: labelX,
+                schY: labelY,
+                internalHelper: false
+              },
+              tsxSnippet: ''
+            })
+          }
+        }
+
         nextWires.push({
           id: `wire-auto-${Date.now()}-${created}`,
           from: { componentId: component.id, pinName },
           to: { componentId: netPort.id, pinName: 'port' },
-          routingIntent: 'semantic-auto'
+          routingIntent: 'semantic-auto',
+          visualMode: powerStrategy === 'global-label' ? 'label-only' : 'hidden'
         })
         created += 1
       })

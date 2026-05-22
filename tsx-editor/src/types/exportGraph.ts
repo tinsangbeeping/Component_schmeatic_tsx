@@ -4,6 +4,14 @@ export type ExportTrace = {
   to: string
   routePoints?: Array<{ x: number; y: number }>
   routingIntent?: 'manual' | 'semantic-auto' | 'orthogonal-auto' | 'bus'
+  visualMode?: 'wire' | 'label-only' | 'hidden'
+}
+
+export type ExportNetDeclaration = {
+  kind: 'net'
+  name: string
+  role?: string
+  scope?: string
 }
 
 export type ExportNetLabel = {
@@ -14,7 +22,7 @@ export type ExportNetLabel = {
   netRole?: string
 }
 
-export type ExportGraphNode = ExportTrace | ExportNetLabel
+export type ExportGraphNode = ExportNetDeclaration | ExportTrace | ExportNetLabel
 
 /**
  * ExportGraph is an intermediate compile target.
