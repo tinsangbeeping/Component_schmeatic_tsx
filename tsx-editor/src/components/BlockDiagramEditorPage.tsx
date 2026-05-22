@@ -16,6 +16,7 @@ import type { BlockDiagramState } from '../types/blockDiagram'
 export const BlockDiagramEditorPage: React.FC = () => {
   const placedComponents = useEditorStore((state) => state.placedComponents)
   const wires = useEditorStore((state) => state.wires)
+  const setActiveFilePath = useEditorStore((state) => state.setActiveFilePath)
 
   const rawGraph = useMemo(
     () => buildRawBlockGraph(placedComponents, wires),
@@ -140,6 +141,22 @@ export const BlockDiagramEditorPage: React.FC = () => {
     }))
   }
 
+  const onOpenBlock = (blockId: string) => {
+    const block = diagram.blocks.find((candidate) => candidate.id === blockId)
+    if (!block) return
+
+    const subcircuitComponent = placedComponents.find((component) =>
+      block.memberComponentIds.includes(component.id) && component.catalogId === 'subcircuit-instance',
+    )
+
+    const subcircuitPath =
+      subcircuitComponent?.props?.subcircuitPath || subcircuitComponent?.props?.filePath
+
+    if (typeof subcircuitPath === 'string' && subcircuitPath) {
+      setActiveFilePath(subcircuitPath)
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 400 }}>
       <div
@@ -205,6 +222,7 @@ export const BlockDiagramEditorPage: React.FC = () => {
         selectedBlockIds={diagram.selectedBlockIds}
         onSelectBlock={onSelectBlock}
         onMoveBlock={onMoveBlock}
+        onOpenBlock={onOpenBlock}
       />
 
       <div

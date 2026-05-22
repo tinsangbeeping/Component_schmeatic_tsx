@@ -11,6 +11,7 @@ type Props = {
   selectedBlockIds: string[]
   onSelectBlock: (blockId: string, additive: boolean) => void
   onMoveBlock: (blockId: string, x: number, y: number) => void
+  onOpenBlock?: (blockId: string) => void
 }
 
 function isNetHub(block?: DiagramBlock) {
@@ -41,6 +42,7 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
   selectedBlockIds,
   onSelectBlock,
   onMoveBlock,
+  onOpenBlock,
 }) => {
   const blockById = useMemo(
     () => new Map(blocks.map((block) => [block.id, block])),
@@ -263,6 +265,10 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
             <div
               key={block.id}
               onMouseDown={(e) => onMouseDownBlock(e, block)}
+              onDoubleClick={(e) => {
+                e.stopPropagation()
+                onOpenBlock?.(block.id)
+              }}
               title={block.memberComponentIds.join(', ')}
               style={{
                 position: 'absolute',
@@ -282,7 +288,7 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
                   ? '0 0 0 3px rgba(255,255,255,0.18)'
                   : '0 8px 22px rgba(0,0,0,0.25)',
                 color: '#f1f5f9',
-                cursor: 'move',
+                cursor: onOpenBlock ? 'pointer' : 'move',
                 display: 'flex',
                 flexDirection: 'column',
                 justifyContent: 'center',
