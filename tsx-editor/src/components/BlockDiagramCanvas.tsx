@@ -11,10 +11,29 @@ type Props = {
   selectedBlockIds: string[]
   onSelectBlock: (blockId: string, additive: boolean) => void
   onMoveBlock: (blockId: string, x: number, y: number) => void
+  onOpenBlock?: (blockId: string) => void
 }
 
 function isNetHub(block?: DiagramBlock) {
   return !!block && block.kind === 'connector' && block.memberComponentIds.length === 0
+}
+
+function edgeStyle(edge: DiagramEdge) {
+  if (edge.relation === 'hierarchy') {
+    return {
+      stroke: '#94a3b8',
+      strokeDasharray: '6 5',
+      opacity: 0.8,
+      width: 1.5,
+    }
+  }
+
+  return {
+    stroke: '#6ea8fe',
+    strokeDasharray: undefined,
+    opacity: 0.9,
+    width: Math.min(4, Math.max(2, edge.strength)),
+  }
 }
 
 export const BlockDiagramCanvas: React.FC<Props> = ({
@@ -23,6 +42,7 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
   selectedBlockIds,
   onSelectBlock,
   onMoveBlock,
+  onOpenBlock,
 }) => {
   const blockById = useMemo(
     () => new Map(blocks.map((block) => [block.id, block])),
@@ -185,6 +205,7 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
             const bx = b.x + b.width / 2
             const by = b.y + b.height / 2
             const label = edge.labels.slice(0, 2).join(', ')
+            const style = edgeStyle(edge)
 
             return (
               <g key={edge.id}>
@@ -193,9 +214,10 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
                   y1={ay}
                   x2={bx}
                   y2={by}
-                  stroke="#6ea8fe"
-                  strokeWidth={Math.min(4, Math.max(2, edge.strength))}
-                  opacity={0.85}
+                  stroke={style.stroke}
+                  strokeDasharray={style.strokeDasharray}
+                  strokeWidth={style.width}
+                  opacity={style.opacity}
                 />
 
                 {label && (
@@ -243,6 +265,10 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
             <div
               key={block.id}
               onMouseDown={(e) => onMouseDownBlock(e, block)}
+              onDoubleClick={(e) => {
+                e.stopPropagation()
+                onOpenBlock?.(block.id)
+              }}
               title={block.memberComponentIds.join(', ')}
               style={{
                 position: 'absolute',
@@ -251,13 +277,18 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
                 width: block.width,
                 height: block.height,
                 borderRadius: 14,
-                background: '#252526',
+                background:
+                  block.layer === 'block'
+                    ? '#252526'
+                    : block.layer === 'subcircuit'
+                      ? '#1f2937'
+                      : '#1f242d',
                 border: selected ? '2px solid #ffffff' : `2px solid ${block.color}`,
                 boxShadow: selected
                   ? '0 0 0 3px rgba(255,255,255,0.18)'
                   : '0 8px 22px rgba(0,0,0,0.25)',
                 color: '#f1f5f9',
-                cursor: 'move',
+                cursor: onOpenBlock ? 'pointer' : 'move',
                 display: 'flex',
                 flexDirection: 'column',
                 justifyContent: 'center',
@@ -286,7 +317,7 @@ export const BlockDiagramCanvas: React.FC<Props> = ({
                   lineHeight: 1.25,
                 }}
               >
-                {block.subtitle || block.kind}
+                {`${block.layer} • ${block.subtitle || block.kind}`}
               </div>
             </div>
           )

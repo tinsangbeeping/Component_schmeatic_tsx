@@ -20,6 +20,8 @@ export function createInitialDiagramState(rawBlocks: RawBlock[], rawEdges: RawEd
       title: block.title,
       subtitle: block.subtitle,
       kind: block.kind,
+      layer: block.layer,
+      parentBlockId: block.parentBlockId,
       childBlockIds: [],
       rawBlockIds: [block.id],
       memberComponentIds: block.memberComponentIds,
@@ -39,10 +41,25 @@ export function createInitialDiagramState(rawBlocks: RawBlock[], rawEdges: RawEd
 export function autoLayoutDiagram(blocks: DiagramBlock[], edges: DiagramEdge[]) {
   if (blocks.length === 0) return blocks
 
-  const degree = new Map<string, number>()
-  blocks.forEach((block) => degree.set(block.id, 0))
+  const layerOrder = (block: DiagramBlock) => {
+    if (block.layer === 'block') return 0
+    if (block.layer === 'subcircuit') return 1
+    return 2
+  }
 
-  edges.forEach((edge) => {
+  const topLevelBlocks = blocks.filter((block) => block.layer === 'block' || !block.parentBlockId)
+  const topLevelIds = new Set(topLevelBlocks.map((block) => block.id))
+  const topLevelEdges = edges.filter(
+    (edge) =>
+      edge.relation === 'electrical' &&
+      topLevelIds.has(edge.sourceBlockId) &&
+      topLevelIds.has(edge.targetBlockId),
+  )
+
+  const degree = new Map<string, number>()
+  topLevelBlocks.forEach((block) => degree.set(block.id, 0))
+
+  topLevelEdges.forEach((edge) => {
     degree.set(edge.sourceBlockId, (degree.get(edge.sourceBlockId) || 0) + 1)
     degree.set(edge.targetBlockId, (degree.get(edge.targetBlockId) || 0) + 1)
   })
@@ -68,7 +85,7 @@ export function autoLayoutDiagram(blocks: DiagramBlock[], edges: DiagramEdge[]) 
     return score
   }
 
-  const center = [...blocks].sort((a, b) => scoreBlock(b) - scoreBlock(a))[0]
+  const center = [...topLevelBlocks].sort((a, b) => scoreBlock(b) - scoreBlock(a))[0]
   const centerX = 520
   const centerY = 260
 
@@ -77,7 +94,7 @@ export function autoLayoutDiagram(blocks: DiagramBlock[], edges: DiagramEdge[]) 
   const top: DiagramBlock[] = []
   const bottom: DiagramBlock[] = []
 
-  for (const block of blocks) {
+  for (const block of topLevelBlocks) {
     if (block.id === center.id) continue
 
     const text = textOf(block)
@@ -104,14 +121,14 @@ export function autoLayoutDiagram(blocks: DiagramBlock[], edges: DiagramEdge[]) 
     }
   }
 
-  const result: DiagramBlock[] = [{ ...center, x: centerX, y: centerY }]
+  const topLevelLayout: DiagramBlock[] = [{ ...center, x: centerX, y: centerY }]
 
   const placeVertical = (items: DiagramBlock[], x: number, yCenter: number) => {
     const spacing = 130
     const startY = yCenter - ((items.length - 1) * spacing) / 2
 
     items.forEach((block, index) => {
-      result.push({ ...block, x, y: startY + index * spacing })
+      topLevelLayout.push({ ...block, x, y: startY + index * spacing })
     })
   }
 
@@ -120,7 +137,7 @@ export function autoLayoutDiagram(blocks: DiagramBlock[], edges: DiagramEdge[]) 
     const startX = xCenter - ((items.length - 1) * spacing) / 2
 
     items.forEach((block, index) => {
-      result.push({ ...block, x: startX + index * spacing, y })
+      topLevelLayout.push({ ...block, x: startX + index * spacing, y })
     })
   }
 
@@ -129,7 +146,56 @@ export function autoLayoutDiagram(blocks: DiagramBlock[], edges: DiagramEdge[]) 
   placeHorizontal(top, centerX, centerY - 170)
   placeHorizontal(bottom, centerX, centerY + 170)
 
-  return result
+  const topLevelById = new Map(topLevelLayout.map((block) => [block.id, block]))
+  const hierarchyLayout: DiagramBlock[] = []
+
+  for (const parent of topLevelLayout) {
+    const children = blocks
+      .filter((block) => block.parentBlockId === parent.id)
+      .sort((a, b) => {
+        const layerDiff = layerOrder(a) - layerOrder(b)
+        if (layerDiff !== 0) return layerDiff
+        return a.title.localeCompare(b.title)
+      })
+
+    if (children.length === 0) continue
+
+    const subcircuits = children.filter((child) => child.layer === 'subcircuit')
+    const components = children.filter((child) => child.layer !== 'subcircuit')
+    const rowHeight = 90
+
+    const placeGroup = (group: DiagramBlock[], x: number) => {
+      const startY = parent.y - ((group.length - 1) * rowHeight) / 2
+
+      group.forEach((child, index) => {
+        hierarchyLayout.push({
+          ...child,
+          x,
+          y: startY + index * rowHeight,
+          width: Math.min(220, child.width),
+          height: 66,
+        })
+      })
+    }
+
+    if (subcircuits.length) {
+      placeGroup(subcircuits, parent.x + parent.width + 90)
+    }
+
+    if (components.length) {
+      const componentX = subcircuits.length
+        ? parent.x + parent.width + 320
+        : parent.x + parent.width + 140
+
+      placeGroup(components, componentX)
+    }
+  }
+
+  const untouched = blocks.filter(
+    (block) => !topLevelById.has(block.id) && !block.parentBlockId,
+  )
+
+  return [...topLevelLayout, ...hierarchyLayout, ...untouched]
 }
 
 export function moveDiagramBlock(blocks: DiagramBlock[], blockId: string, x: number, y: number) {
@@ -156,7 +222,7 @@ export function rebuildDiagramEdges(blocks: DiagramBlock[], rawEdges: RawEdge[])
     if (!source || !target || source === target) return
 
     const [a, b] = source < target ? [source, target] : [target, source]
-    const key = `${a}__${b}`
+    const key = `${edge.relation}:${a}__${b}`
     const existing = acc.get(key)
 
     if (!existing) {
@@ -166,6 +232,7 @@ export function rebuildDiagramEdges(blocks: DiagramBlock[], rawEdges: RawEdge[])
         targetBlockId: b,
         labels: [...edge.labels],
         strength: edge.strength,
+        relation: edge.relation,
       })
     } else {
       existing.strength += edge.strength
@@ -204,6 +271,7 @@ export function mergeDiagramBlocks(
     title,
     subtitle: `${selected.length} grouped blocks`,
     kind: 'active',
+    layer: 'block',
     childBlockIds,
     rawBlockIds,
     memberComponentIds,
@@ -248,6 +316,8 @@ export function ungroupDiagramBlock(
         title: raw.title,
         subtitle: raw.subtitle,
         kind: raw.kind,
+        layer: raw.layer,
+        parentBlockId: raw.parentBlockId,
         childBlockIds: [],
         rawBlockIds: [raw.id],
         memberComponentIds: raw.memberComponentIds,

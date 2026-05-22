@@ -429,6 +429,7 @@ export function buildRawBlockGraph(
               members.length > 1 ? 's' : ''
             }`,
       kind,
+      layer: 'block',
       memberComponentIds: members.map((m) => m.id),
       memberNames,
       memberTypes: typeLabels,
@@ -472,6 +473,7 @@ export function buildRawBlockGraph(
         targetBlockId: target,
         labels: strongName ? [strongName] : [],
         strength: GLOBAL_NET_NAMES.has(netName) ? 1 : 3,
+        relation: 'electrical',
       })
     } else if (strongName && !existing.labels.includes(strongName)) {
       existing.labels.push(strongName)
@@ -547,6 +549,7 @@ export function buildRawBlockGraph(
           title: GLOBAL_NET_NAMES.has(net.name) ? net.name : net.name || 'NET',
           subtitle: `${touchedBlocks.length} connected blocks`,
           kind: 'connector',
+          layer: 'block',
           memberComponentIds: [],
           memberNames: [],
           memberTypes: ['Net Hub'],
@@ -574,9 +577,53 @@ export function buildRawBlockGraph(
       : [...(netIdsByBlockId.get(block.id) || new Set<string>())],
   }))
 
+  const hierarchyRawBlocks: RawBlock[] = []
+  const hierarchyEdges: RawEdge[] = []
+
+  for (const parent of finalizedRawBlocks) {
+    if (parent.layer !== 'block' || parent.memberComponentIds.length === 0) continue
+
+    const members = parent.memberComponentIds
+      .map((componentId) => byId.get(componentId))
+      .filter((component): component is PlacedComponent => !!component)
+
+    for (const member of members) {
+      const isSubcircuit = member.catalogId === 'subcircuit-instance'
+      const childLayer = isSubcircuit ? 'subcircuit' : 'component'
+      const childId = `${childLayer}:${parent.id}:${member.id}`
+      const childTitle = getComponentLabel(member)
+      const childType = getComponentTypeLabel(member)
+      const ports = ((member.props?.ports as string[] | undefined) || []).length
+
+      hierarchyRawBlocks.push({
+        id: childId,
+        title: childTitle,
+        subtitle: isSubcircuit
+          ? `Subcircuit instance${ports ? ` • ${ports} ports` : ''}`
+          : `Component • ${childType}`,
+        kind: classifyKind(member),
+        layer: childLayer,
+        parentBlockId: parent.id,
+        memberComponentIds: [member.id],
+        memberNames: [childTitle],
+        memberTypes: [childType],
+        netIds: parent.netIds,
+      })
+
+      hierarchyEdges.push({
+        id: `hier:${parent.id}__${childId}`,
+        sourceBlockId: parent.id,
+        targetBlockId: childId,
+        labels: [],
+        strength: 1,
+        relation: 'hierarchy',
+      })
+    }
+  }
+
   return {
-    rawBlocks: finalizedRawBlocks,
-    rawEdges: [...edgeAccumulator.values()],
+    rawBlocks: [...finalizedRawBlocks, ...hierarchyRawBlocks],
+    rawEdges: [...edgeAccumulator.values(), ...hierarchyEdges],
     rawNets: nets,
     debug: {
       visibleComponents: visibleComponents.length,
