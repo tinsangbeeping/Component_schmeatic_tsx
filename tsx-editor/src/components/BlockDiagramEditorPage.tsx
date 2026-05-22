@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState, useRef } from 'react'
 import { useEditorStore } from '../store/editorStore'
 import { buildRawBlockGraph } from '../lib/parts/blockDiagramConverter'
 import {
@@ -26,12 +26,32 @@ export const BlockDiagramEditorPage: React.FC = () => {
     createInitialDiagramState(rawGraph.rawBlocks, rawGraph.rawEdges),
   )
 
+  const TITLE_STORAGE_KEY = 'blockDiagramTitleOverrides:v1'
+
+const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(TITLE_STORAGE_KEY) || '{}')
+    } catch {
+      return {}
+    }
+  })
+
+  const titleOverridesRef = useRef(titleOverrides)
+
+  useEffect(() => {
+    titleOverridesRef.current = titleOverrides
+    localStorage.setItem(TITLE_STORAGE_KEY, JSON.stringify(titleOverrides))
+  }, [titleOverrides])
+
   useEffect(() => {
     const next = createInitialDiagramState(rawGraph.rawBlocks, rawGraph.rawEdges)
 
     setDiagram({
       ...next,
-      blocks: autoLayoutDiagram(next.blocks, next.edges),
+      blocks: autoLayoutDiagram(next.blocks, next.edges).map((block) => ({
+        ...block,
+        title: titleOverridesRef.current[block.id] || block.title,
+      })),
     })
   }, [rawGraph])
 
@@ -100,23 +120,6 @@ export const BlockDiagramEditorPage: React.FC = () => {
     })
   }
 
-  const onRename = () => {
-    if (diagram.selectedBlockIds.length !== 1) return
-
-    const blockId = diagram.selectedBlockIds[0]
-    const current = diagram.blocks.find((block) => block.id === blockId)
-
-    if (!current) return
-
-    const nextTitle = window.prompt('Rename block', current.title)
-    if (!nextTitle) return
-
-    setDiagram((prev) => ({
-      ...prev,
-      blocks: renameDiagramBlock(prev.blocks, blockId, nextTitle),
-    }))
-  }
-
   const onAutoLayout = () => {
     setDiagram((prev) => ({
       ...prev,
@@ -129,7 +132,10 @@ export const BlockDiagramEditorPage: React.FC = () => {
 
     setDiagram({
       ...next,
-      blocks: autoLayoutDiagram(next.blocks, next.edges),
+      blocks: autoLayoutDiagram(next.blocks, next.edges).map((block) => ({
+        ...block,
+        title: titleOverridesRef.current[block.id] || block.title,
+      })),
     })
   }
 
@@ -185,10 +191,6 @@ export const BlockDiagramEditorPage: React.FC = () => {
             Ungroup
           </button>
 
-          <button style={btnStyle} onClick={onRename} disabled={diagram.selectedBlockIds.length !== 1}>
-            Rename
-          </button>
-
           <button style={btnStyle} onClick={onRebuildEdges}>
             Rebuild edges
           </button>
@@ -205,6 +207,17 @@ export const BlockDiagramEditorPage: React.FC = () => {
         selectedBlockIds={diagram.selectedBlockIds}
         onSelectBlock={onSelectBlock}
         onMoveBlock={onMoveBlock}
+        onRenameBlock={(blockId, title) => {
+          setTitleOverrides((prev) => ({
+            ...prev,
+            [blockId]: title,
+          }))
+
+          setDiagram((prev) => ({
+            ...prev,
+            blocks: renameDiagramBlock(prev.blocks, blockId, title),
+          }))
+        }}
       />
 
       <div
