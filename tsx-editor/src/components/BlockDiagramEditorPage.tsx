@@ -26,6 +26,7 @@ export const BlockDiagramEditorPage: React.FC = () => {
   const [diagram, setDiagram] = useState<BlockDiagramState>(() =>
     createInitialDiagramState(rawGraph.rawBlocks, rawGraph.rawEdges),
   )
+  const [showHierarchy, setShowHierarchy] = useState(false)
 
   useEffect(() => {
     const next = createInitialDiagramState(rawGraph.rawBlocks, rawGraph.rawEdges)
@@ -141,6 +142,31 @@ export const BlockDiagramEditorPage: React.FC = () => {
     }))
   }
 
+  const visibleBlocks = useMemo(
+    () => (showHierarchy ? diagram.blocks : diagram.blocks.filter((block) => block.layer === 'block')),
+    [diagram.blocks, showHierarchy],
+  )
+
+  const visibleBlockIds = useMemo(
+    () => new Set(visibleBlocks.map((block) => block.id)),
+    [visibleBlocks],
+  )
+
+  const visibleEdges = useMemo(
+    () =>
+      diagram.edges.filter(
+        (edge) =>
+          visibleBlockIds.has(edge.sourceBlockId) &&
+          visibleBlockIds.has(edge.targetBlockId),
+      ),
+    [diagram.edges, visibleBlockIds],
+  )
+
+  const visibleSelectedBlockIds = useMemo(
+    () => diagram.selectedBlockIds.filter((id) => visibleBlockIds.has(id)),
+    [diagram.selectedBlockIds, visibleBlockIds],
+  )
+
   const onOpenBlock = (blockId: string) => {
     const block = diagram.blocks.find((candidate) => candidate.id === blockId)
     if (!block) return
@@ -213,13 +239,17 @@ export const BlockDiagramEditorPage: React.FC = () => {
           <button style={btnStyle} onClick={onResetFromSchematic}>
             Reset from schematic
           </button>
+
+          <button style={btnStyle} onClick={() => setShowHierarchy((value) => !value)}>
+            {showHierarchy ? 'Hide hierarchy' : 'Show hierarchy'}
+          </button>
         </div>
       </div>
 
       <BlockDiagramCanvas
-        blocks={diagram.blocks}
-        edges={diagram.edges}
-        selectedBlockIds={diagram.selectedBlockIds}
+        blocks={visibleBlocks}
+        edges={visibleEdges}
+        selectedBlockIds={visibleSelectedBlockIds}
         onSelectBlock={onSelectBlock}
         onMoveBlock={onMoveBlock}
         onOpenBlock={onOpenBlock}
