@@ -1,10 +1,14 @@
 export type BlockKind = 'active' | 'passive' | 'supply' | 'connector' | 'isolated'
+export type BlockLayer = 'block' | 'subcircuit' | 'component'
+export type EdgeRelation = 'electrical' | 'hierarchy'
 
 export interface RawBlock {
   id: string
   title: string
   subtitle?: string
   kind: BlockKind
+  layer: BlockLayer
+  parentBlockId?: string
   memberComponentIds: string[]
   memberNames: string[]
   memberTypes: string[]
@@ -17,6 +21,7 @@ export interface RawEdge {
   targetBlockId: string
   labels: string[]
   strength: number
+  relation: EdgeRelation
 }
 
 export interface RawNet {
@@ -42,6 +47,8 @@ export interface DiagramBlock {
   title: string
   subtitle?: string
   kind: BlockKind
+  layer: BlockLayer
+  parentBlockId?: string
   childBlockIds: string[]
   rawBlockIds: string[]
   memberComponentIds: string[]
@@ -58,6 +65,7 @@ export interface DiagramEdge {
   targetBlockId: string
   labels: string[]
   strength: number
+  relation: EdgeRelation
 }
 
 export interface BlockDiagramState {
